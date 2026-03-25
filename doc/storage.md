@@ -82,15 +82,17 @@ struct StringValue {
 
 ```cpp
 struct Column {
-    void* data;           // 指向列数据数组的起始地址（finalize 后不再变化）
-    uint32_t elem_size;   // 每个元素的字节大小
-    // data[i] 位于 (char*)data + i * elem_size
+    std::vector<uint8_t> storage;   // 拥有列数据的内存（typed 数据的字节表示）
+    uint32_t elem_size;             // 每个元素的字节大小
+
+    void* data() { return storage.data(); }   // 列数据起始地址
+    // data()[i] 位于 (char*)data() + i * elem_size
 };
 ```
 
-列数据是一段连续内存，元素按行号密集排列，无 gap、无 null bitmap。
+`Column.storage` 是一个 `std::vector<uint8_t>`，**拥有**列数据的内存。加载期间用 typed `std::vector<T>` 累积，finalize 时通过 `memcpy` 或类型双关将数据移入 `storage`（详见 §6.3）。finalize 后 `storage` 不再修改，`data()` 返回的指针在 Table 生命周期内稳定。
 
-**加载期间**列数据用 typed `std::vector<T>` 累积（如 `std::vector<int32_t>`），加载完成后 **finalize** 为固定大小的 `Column`：将 vector 的 data 指针转移到 `Column.data`，此后不再修改。详见 §6.3。
+列数据是连续内存，元素按行号密集排列，无 gap、无 null bitmap。
 
 > **[MVP simplification]** Q1 的 lineitem 表没有 NULL 值。MVP 不在 Column 级别存储 null bitmap。SQL Values 层的 null_flag 始终为 `const false`。如果未来支持含 NULL 的表，需要在 Column 中增加 `uint8_t* null_bitmap`（1 bit per row）。
 
@@ -224,19 +226,22 @@ loadTable("lineitem.tbl"):
                       col_buf.push_back(StringValue{off, field.size()})
 
     // === Phase 2: Finalize ===
+    // 将 typed vector 的字节内容移入 Column.storage（Column 拥有内存）
     3. 对每列：
-       table.columns[i].data = col_buf.data()
-       table.columns[i].elem_size = sizeof(T)
-       // 将 vector 的所有权转移给 Table（move 语义），之后不再修改
+       auto& col = table.columns[i];
+       col.elem_size = sizeof(T);
+       col.storage.resize(col_buf.size() * sizeof(T));
+       memcpy(col.storage.data(), col_buf.data(), col.storage.size());
+       // col_buf 可以安全析构——数据已复制到 Column.storage 中
     4. table.string_buffer = std::move(string_buf)
     5. table.row_count = col0_buf.size()
     6. 构建 Catalog entry
 ```
 
 关键点：
-- Phase 1 期间 vector 可能多次扩容，但 StringValue 中存的是 **offset** 而非指针，所以 string_buf 扩容不会导致悬空引用
-- Phase 2 的 finalize 后所有数据定型，Column.data 指针不再变化
-- JIT 代码只在 finalize 后访问 Column.data，不存在并发修改问题
+- Phase 1 期间 typed vector 可能多次扩容，但 StringValue 中存的是 **offset** 而非指针，所以 string_buf 扩容不会导致悬空引用
+- Phase 2 将数据 memcpy 到 `Column.storage` 中，Column 拥有内存的所有权。typed vector 析构后 `Column.storage`（和 `data()` 指针）不受影响
+- Finalize 后 `Column.storage` 不再修改，`data()` 返回的指针在 Table 生命周期内稳定
 
 ### 6.4 DECIMAL 解析
 
@@ -321,8 +326,9 @@ mov  rax, [r12 + r9*8]     ; 一条指令完成地址计算 + 加载
 
 执行时:
     RuntimeContext ctx;
-    ctx.column_ptrs = table.getColumnPointers()  // void*[]
+    ctx.column_ptrs = table.getColumnPointers()  // void*[] (每列的 Column.data())
     ctx.row_count = table.row_count
+    ctx.string_base = table.string_buffer.data() // VARCHAR offset 的基地址
     pipeline_func(&ctx)                          // JIT 函数直接访问
 ```
 
