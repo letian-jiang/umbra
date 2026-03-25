@@ -215,6 +215,8 @@ Interpreter::ExecuteResult Interpreter::executeInst(ir::Program& program,
                 auto result = static_cast<int32_t>(slots_[inst.arg(0)]) +
                               static_cast<int32_t>(slots_[inst.arg(1)]);
                 slots_[instOff] = static_cast<uint64_t>(static_cast<int64_t>(result));
+            } else if (type == TypeId::UINT64) {
+                slots_[instOff] = slots_[inst.arg(0)] + slots_[inst.arg(1)];
             } else {
                 auto result = static_cast<int64_t>(slots_[inst.arg(0)]) +
                               static_cast<int64_t>(slots_[inst.arg(1)]);
@@ -228,6 +230,8 @@ Interpreter::ExecuteResult Interpreter::executeInst(ir::Program& program,
                 auto result = static_cast<int32_t>(slots_[inst.arg(0)]) -
                               static_cast<int32_t>(slots_[inst.arg(1)]);
                 slots_[instOff] = static_cast<uint64_t>(static_cast<int64_t>(result));
+            } else if (type == TypeId::UINT64) {
+                slots_[instOff] = slots_[inst.arg(0)] - slots_[inst.arg(1)];
             } else {
                 auto result = static_cast<int64_t>(slots_[inst.arg(0)]) -
                               static_cast<int64_t>(slots_[inst.arg(1)]);
@@ -241,6 +245,9 @@ Interpreter::ExecuteResult Interpreter::executeInst(ir::Program& program,
                 auto result = static_cast<int32_t>(slots_[inst.arg(0)]) *
                               static_cast<int32_t>(slots_[inst.arg(1)]);
                 slots_[instOff] = static_cast<uint64_t>(static_cast<int64_t>(result));
+            } else if (type == TypeId::UINT64) {
+                // Unsigned multiplication wraps without UB.
+                slots_[instOff] = slots_[inst.arg(0)] * slots_[inst.arg(1)];
             } else {
                 auto result = static_cast<int64_t>(slots_[inst.arg(0)]) *
                               static_cast<int64_t>(slots_[inst.arg(1)]);
