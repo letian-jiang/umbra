@@ -50,5 +50,15 @@ target_link_libraries(test_interpreter PRIVATE
 )
 add_test(NAME interpreter COMMAND test_interpreter)
 
+# Parser tests
+add_executable(test_parser
+    unit/test_parser.cpp
+)
+target_link_libraries(test_parser PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME parser COMMAND test_parser)
+
 # Verify the main executable runs and exits 0
 add_test(NAME main_runs COMMAND umbra)

@@ -35,7 +35,7 @@ For each task:
 | 2 | Storage Layer | [x] Done | — | Coverage 91.5% |
 | 3 | Umbra IR | [x] Done | — | Coverage 90.7% |
 | 4 | Interpreter Backend | [x] Done | — | Coverage 93.1% |
-| 5 | Parser | [ ] Not Started | — | — |
+| 5 | Parser | [x] Done | — | Coverage 90.8% |
 | 6 | Binder | [ ] Not Started | — | — |
 | 7 | Optimizer | [ ] Not Started | — | — |
 | 8 | Codegen API + SQL Values | [ ] Not Started | — | — |
@@ -187,7 +187,7 @@ Tasks are executed serially in the order listed below. Each task produces a comm
 
 **Design docs to update**: `doc/parser.md` if any AST node changes
 
-**Status**: [ ] Not Started
+**Status**: [x] Done
 
 ---
 
