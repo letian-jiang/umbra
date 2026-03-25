@@ -392,10 +392,10 @@ test/
 │   ├── test_call.cpp           # §3.2 函数调用
 │   └── test_optimizations.cpp  # §3.3 Flying Start 优化正确性
 ├── sql/
-│   ├── test_q1.cpp             # §4.3 Q1 完整 + 参数变体
-│   └── test_subexpr.cpp        # §4.3 子表达式隔离测试
+│   ├── test_q1.cpp             # §4.3 Q1 完整 e2e execution + result verification
+│   └── test_q1_variants.cpp    # §4.3 INTERVAL variants (60/90/120/180 DAY)
 └── perf/
-    └── bench_q1.cpp            # §5
+    └── test_benchmark.cpp      # §5 Q1 latency measurement + phase breakdown
 ```
 
 ---

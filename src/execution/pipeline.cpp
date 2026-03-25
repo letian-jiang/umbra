@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "backend/interpreter/interpreter.h"
@@ -112,15 +113,25 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
     const auto* sortOp = static_cast<const optimizer::PhysicalSort*>(
         findOperator(result.root, optimizer::PhysicalNodeKind::SORT));
 
-    // Determine number of output columns.
-    uint32_t numOutputCols = 0;
+    // Determine output schema from projection (or agg keys + agg results).
+    std::vector<ResultColumn> schema;
     if (projOp != nullptr) {
-        numOutputCols = static_cast<uint32_t>(projOp->expressions.size());
+        for (size_t i = 0; i < projOp->expressions.size(); ++i) {
+            std::string alias =
+                i < projOp->aliases.size() ? projOp->aliases[i] : "col_" + std::to_string(i);
+            schema.push_back({alias, projOp->expressions[i]->resultType});
+        }
     } else {
-        // No projection — output is group keys + aggregates.
         const auto* aggOp = hashAggTranslator_->physicalOp();
-        numOutputCols = static_cast<uint32_t>(aggOp->groupByKeys.size() + aggOp->aggregates.size());
+        for (size_t i = 0; i < aggOp->groupByKeys.size(); ++i) {
+            schema.push_back({"group_" + std::to_string(i), aggOp->groupByKeys[i]->resultType});
+        }
+        for (size_t i = 0; i < aggOp->aggregates.size(); ++i) {
+            schema.push_back({"agg_" + std::to_string(i), aggOp->aggregates[i]->resultType});
+        }
     }
+    auto numOutputCols = static_cast<uint32_t>(schema.size());
+    collector.setSchema(std::move(schema));
 
     // Prepare result collector buffer.
     collector.prepare(1024);  // Max 1024 output rows (plenty for Q1's ~4 rows).
