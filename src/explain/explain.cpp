@@ -1,0 +1,244 @@
+#include "explain/explain.h"
+
+#include <algorithm>
+#include <cctype>
+#include <chrono>
+#include <sstream>
+#include <string>
+
+#include "binder/binder.h"
+#include "binder/bound_plan_printer.h"
+#include "catalog/catalog.h"
+#include "execution/pipeline.h"
+#include "execution/result_collector.h"
+#include "ir/printer.h"
+#include "optimizer/optimizer.h"
+#include "optimizer/physical_plan_printer.h"
+#include "parser/ast_printer.h"
+#include "parser/parser.h"
+#include "storage/table.h"
+
+namespace umbra::explain {
+
+namespace {
+
+/// Convert a string to uppercase.
+std::string toUpper(const std::string& str) {
+    std::string result = str;
+    std::transform(result.begin(), result.end(), result.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+    return result;
+}
+
+/// Trim leading/trailing whitespace from a string.
+std::string trim(const std::string& str) {
+    auto start = str.find_first_not_of(" \t\n\r");
+    if (start == std::string::npos) {
+        return "";
+    }
+    auto end = str.find_last_not_of(" \t\n\r");
+    return str.substr(start, end - start + 1);
+}
+
+/// Helper: get current time as high_resolution_clock time_point.
+auto now() {
+    return std::chrono::high_resolution_clock::now();
+}
+
+/// Helper: compute elapsed milliseconds.
+double elapsedMs(std::chrono::high_resolution_clock::time_point start,
+                 std::chrono::high_resolution_clock::time_point end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+}  // namespace
+
+bool parseExplainLevel(const std::string& str, ExplainLevel& level) {
+    std::string upper = toUpper(str);
+    if (upper == "AST") {
+        level = ExplainLevel::AST;
+    } else if (upper == "LOGICAL") {
+        level = ExplainLevel::LOGICAL;
+    } else if (upper == "PHYSICAL") {
+        level = ExplainLevel::PHYSICAL;
+    } else if (upper == "PIPELINE") {
+        level = ExplainLevel::PIPELINE;
+    } else if (upper == "IR") {
+        level = ExplainLevel::IR;
+    } else if (upper == "ASM") {
+        level = ExplainLevel::ASM;
+    } else if (upper == "PROFILE") {
+        level = ExplainLevel::PROFILE;
+    } else if (upper == "ALL") {
+        level = ExplainLevel::ALL;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+std::string explainLevelToString(ExplainLevel level) {
+    switch (level) {
+        case ExplainLevel::AST:
+            return "AST";
+        case ExplainLevel::LOGICAL:
+            return "LOGICAL";
+        case ExplainLevel::PHYSICAL:
+            return "PHYSICAL";
+        case ExplainLevel::PIPELINE:
+            return "PIPELINE";
+        case ExplainLevel::IR:
+            return "IR";
+        case ExplainLevel::ASM:
+            return "ASM";
+        case ExplainLevel::PROFILE:
+            return "PROFILE";
+        case ExplainLevel::ALL:
+            return "ALL";
+    }
+    return "UNKNOWN";
+}
+
+bool parseExplainPrefix(const std::string& sql, ExplainLevel& level, std::string& remainingSql) {
+    std::string trimmed = trim(sql);
+    if (trimmed.size() < 7) {
+        return false;
+    }
+
+    std::string prefix = toUpper(trimmed.substr(0, 7));
+    if (prefix != "EXPLAIN") {
+        return false;
+    }
+
+    // Skip "EXPLAIN" and whitespace.
+    std::string rest = trim(trimmed.substr(7));
+    if (rest.empty()) {
+        return false;
+    }
+
+    // Try to parse a level keyword.
+    // Find the first space/tab/newline after the potential level keyword.
+    auto spacePos = rest.find_first_of(" \t\n\r");
+    if (spacePos != std::string::npos) {
+        std::string candidate = rest.substr(0, spacePos);
+        if (parseExplainLevel(candidate, level)) {
+            remainingSql = trim(rest.substr(spacePos));
+            return true;
+        }
+    }
+
+    // No explicit level — default to ALL, treat rest as SQL.
+    level = ExplainLevel::ALL;
+    remainingSql = rest;
+    return true;
+}
+
+std::string runExplain(ExplainLevel level, const std::string& sql, const Catalog& catalog,
+                       Table& table) {
+    std::ostringstream out;
+
+    bool showAst = (level == ExplainLevel::AST || level == ExplainLevel::ALL ||
+                    level == ExplainLevel::PROFILE);
+    bool showLogical = (level == ExplainLevel::LOGICAL || level == ExplainLevel::ALL ||
+                        level == ExplainLevel::PROFILE);
+    bool showPhysical = (level == ExplainLevel::PHYSICAL || level == ExplainLevel::ALL ||
+                         level == ExplainLevel::PROFILE);
+    bool showPipeline = (level == ExplainLevel::PIPELINE || level == ExplainLevel::ALL ||
+                         level == ExplainLevel::PROFILE);
+    bool showIr =
+        (level == ExplainLevel::IR || level == ExplainLevel::ALL || level == ExplainLevel::PROFILE);
+
+    // For non-ALL/non-PROFILE, only show the requested level.
+    if (level != ExplainLevel::ALL && level != ExplainLevel::PROFILE) {
+        showAst = (level == ExplainLevel::AST);
+        showLogical = (level == ExplainLevel::LOGICAL);
+        showPhysical = (level == ExplainLevel::PHYSICAL);
+        showPipeline = (level == ExplainLevel::PIPELINE);
+        showIr = (level == ExplainLevel::IR);
+    }
+
+    auto totalStart = now();
+
+    // === Parse ===
+    auto planStart = now();
+    auto parseResult = parser::Parser::parse(sql);
+
+    if (showAst) {
+        out << "AST:\n";
+        out << parser::ASTPrinter::print(*parseResult.stmt);
+        out << "\n";
+    }
+
+    // For AST-only, stop here.
+    if (level == ExplainLevel::AST) {
+        return out.str();
+    }
+
+    // === Bind ===
+    binder::Binder binder(catalog);
+    auto bindResult = binder.bind(*parseResult.stmt);
+
+    if (showLogical) {
+        out << "Logical Plan:\n";
+        out << binder::BoundPlanPrinter::print(bindResult.root);
+        out << "\n";
+    }
+
+    // For LOGICAL-only, stop here.
+    if (level == ExplainLevel::LOGICAL) {
+        return out.str();
+    }
+
+    // === Optimize ===
+    optimizer::Optimizer optimizer;
+    auto optResult = optimizer.optimize(bindResult);
+    auto planEnd = now();
+
+    if (showPhysical) {
+        out << "Physical Plan:\n";
+        out << optimizer::PhysicalPlanPrinter::printPlan(optResult.root);
+        out << "\n";
+    }
+
+    // For PHYSICAL-only, stop here.
+    if (level == ExplainLevel::PHYSICAL) {
+        return out.str();
+    }
+
+    if (showPipeline) {
+        out << "Pipelines:\n";
+        out << optimizer::PhysicalPlanPrinter::printPipelines(optResult.pipelines);
+        out << "\n";
+    }
+
+    // For PIPELINE-only, stop here.
+    if (level == ExplainLevel::PIPELINE) {
+        return out.str();
+    }
+
+    // === IR (requires codegen — we note it's available via pipeline execution) ===
+    if (showIr) {
+        out << "IR: (generated during pipeline execution)\n";
+        out << "\n";
+    }
+
+    // For PROFILE, execute with timing.
+    if (level == ExplainLevel::PROFILE) {
+        double planMs = elapsedMs(planStart, planEnd);
+        auto execStart = now();
+        execution::ResultCollector collector;
+        execution::PipelineExecutor executor;
+        executor.execute(optResult, table, collector);
+        double execMs = elapsedMs(execStart, now());
+        double totalMs = elapsedMs(totalStart, now());
+        out << std::fixed;
+        out.precision(2);
+        out << "Profile:\n  plan:    " << planMs << " ms\n  execute: " << execMs
+            << " ms\n  total:   " << totalMs << " ms\n\nResult: " << collector.numRows()
+            << " rows\n";
+    }
+
+    return out.str();
+}
+
+}  // namespace umbra::explain

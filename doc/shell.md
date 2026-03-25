@@ -351,3 +351,7 @@ count(*)
 | 结果分页（`less` 风格）| 不实现 | Q1 只有 4 行 |
 | prepared statement / 参数化 | 不支持 | |
 | 并发查询 | 不支持 | 单线程 REPL |
+| linenoise 行编辑 | 使用简单 stdin 读取代替 | 无快捷键、历史搜索、Tab 补全 |
+| 历史持久化 (~/.umbra_history) | 不实现 | 避免依赖 linenoise |
+| Tab 自动补全 | 不实现 | 避免依赖 linenoise |
+| `.backend` / `.load` / `.explain` dot命令 | 不实现 | MVP 只需 .help/.quit/.tables/.schema/.timer |

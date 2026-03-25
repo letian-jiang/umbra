@@ -160,5 +160,35 @@ target_link_libraries(test_jit_optimizations PRIVATE
 )
 add_test(NAME jit_optimizations COMMAND test_jit_optimizations)
 
-# Verify the main executable runs and exits 0
-add_test(NAME main_runs COMMAND umbra)
+# EXPLAIN tests
+add_executable(test_explain
+    unit/test_explain.cpp
+)
+target_link_libraries(test_explain PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME explain COMMAND test_explain)
+
+# Shell tests
+add_executable(test_shell
+    unit/test_shell.cpp
+)
+target_link_libraries(test_shell PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME shell COMMAND test_shell)
+
+# Formatter tests
+add_executable(test_formatter
+    unit/test_formatter.cpp
+)
+target_link_libraries(test_formatter PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME formatter COMMAND test_formatter)
+
+# Verify the main executable runs and exits 0 (pipe mode, no input)
+add_test(NAME main_runs COMMAND sh -c "echo '' | $<TARGET_FILE:umbra>")
