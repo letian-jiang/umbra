@@ -34,7 +34,7 @@ For each task:
 | 1 | Build System + Scaffold | [x] Done | 068c9fe | Coverage 95.7% |
 | 2 | Storage Layer | [x] Done | — | Coverage 91.5% |
 | 3 | Umbra IR | [x] Done | — | Coverage 90.7% |
-| 4 | Interpreter Backend | [ ] Not Started | — | — |
+| 4 | Interpreter Backend | [x] Done | — | Coverage 93.1% |
 | 5 | Parser | [ ] Not Started | — | — |
 | 6 | Binder | [ ] Not Started | — | — |
 | 7 | Optimizer | [ ] Not Started | — | — |
@@ -166,7 +166,7 @@ Tasks are executed serially in the order listed below. Each task produces a comm
 
 **Design docs to update**: `doc/interpreter.md` if any execution model changes
 
-**Status**: [ ] Not Started
+**Status**: [x] Done
 
 ---
 

@@ -31,18 +31,11 @@ Interpreter
 
 ### 2.1 Value Slot
 
-所有值统一存储为 64-bit：
+所有值统一存储为 64-bit。实现中直接使用 `uint64_t`（不使用 struct wrapper），在每个 opcode 的 case 中内联做类型转换（`static_cast<int32_t>` 等），保持代码简单直观：
 
 ```cpp
-struct ValueSlot {
-    uint64_t bits;    // 所有类型都存在这 8 字节中
-
-    int32_t  asInt32()  { return static_cast<int32_t>(bits); }
-    int64_t  asInt64()  { return static_cast<int64_t>(bits); }
-    uint64_t asUInt64() { return bits; }
-    bool     asBool()   { return bits != 0; }
-    void*    asPtr()    { return reinterpret_cast<void*>(bits); }
-};
+// 实现使用 raw uint64_t，每个 opcode case 内联转换
+std::vector<uint64_t> slots_;
 ```
 
 ### 2.2 Slot Array
@@ -50,7 +43,7 @@ struct ValueSlot {
 ```cpp
 // 按 instruction buffer 大小分配（每个 byte offset 对应一个潜在的值）
 // 实际只有指令起始 offset 处的 slot 被使用
-std::vector<ValueSlot> slots(instruction_buffer.size());
+slots_.assign(program.instBuffer().size(), 0);
 ```
 
 这比按指令数量分配浪费一些内存（因为指令是变长的，有些 offset 不是指令起始），但换来 O(1) 的 offset → slot 查找，无需额外的映射。
@@ -483,15 +476,7 @@ interp.execute(program, func, args);
 
 ### 7.2 Breakpoints
 
-在特定 instruction offset 处设置断点，命中时暂停并打印所有活跃 value slots：
-
-```cpp
-interp.addBreakpoint(inst_offset);
-// 命中时回调
-interp.setBreakpointHandler([](uint32_t offset, span<ValueSlot> slots) {
-    // 打印、检查、或继续
-});
-```
+> **[MVP deferred]** Breakpoints 在 MVP 中不实现。Trace mode 已足够用于调试。如需要，未来可添加 `addBreakpoint(inst_offset)` 和 `setBreakpointHandler` 接口。
 
 ---
 
@@ -501,6 +486,7 @@ interp.setBreakpointHandler([](uint32_t offset, span<ValueSlot> slots) {
 |------------|---------|------|
 | 论文有此 backend | **没有**——这是 MVP 新增的 | 见 §1 |
 | 高性能解释（threaded code / computed goto）| 简单 switch-case | 性能不重要，正确性优先 |
-| libffi 通用调用 | 手动按参数数量分派（最多 6 个）| Q1 的 host function 参数数 ≤ 3 |
-| 值存储优化（只为有值指令分配 slot）| 按 instruction buffer 大小分配 | 浪费几 KB，换 O(1) 查找 |
+| libffi 通用调用 | Host function 使用 `std::function<uint64_t(const uint64_t*, uint8_t)>` 统一签名 | Q1 的 host function 参数数 ≤ 3 |
+| 值存储优化（只为有值指令分配 slot）| 按 instruction buffer 大小分配 `uint64_t` 数组 | 浪费几 KB，换 O(1) 查找 |
 | `switch` 指令 | 不实现 | Q1 不需要 |
+| Breakpoints (§7.2) | 不实现——trace mode 已足够 | 可后续添加 |

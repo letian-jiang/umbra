@@ -40,5 +40,15 @@ target_link_libraries(test_ir_programs PRIVATE
 )
 add_test(NAME ir_programs COMMAND test_ir_programs)
 
+# Interpreter tests
+add_executable(test_interpreter
+    ir/test_interpreter.cpp
+)
+target_link_libraries(test_interpreter PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME interpreter COMMAND test_interpreter)
+
 # Verify the main executable runs and exits 0
 add_test(NAME main_runs COMMAND umbra)
