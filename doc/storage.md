@@ -133,12 +133,19 @@ Column.data → ┌────────────────────�
 struct Table {
     std::string name;
     uint64_t row_count;
-    std::vector<Column> columns;        // 按 column_index 排列
+    std::vector<Column> columns;           // 按 column_index 排列
 
     // string storage
-    std::vector<char> string_buffer;    // 所有 VARCHAR 列的字符数据
+    std::vector<char> string_buffer;       // 所有 VARCHAR 列的字符数据
+
+    // 缓存的列指针数组（finalize 时构建，生命周期 = Table）
+    std::vector<void*> column_ptrs_;       // column_ptrs_[i] = columns[i].data()
+
+    void* const* columnPtrs() const { return column_ptrs_.data(); }
 };
 ```
+
+`column_ptrs_` 在 finalize 时一次性构建，之后不再修改。`columnPtrs()` 返回的指针在 Table 生命周期内稳定，可直接赋给 `RuntimeContext.column_ptrs`。
 
 ### 4.1 Q1 lineitem 内存占用估算 (SF=0.01, ~60K rows)
 
@@ -338,8 +345,12 @@ mov  rax, [r12 + r9*8]     ; 一条指令完成地址计算 + 加载
     codegen emit: column_ptrs[col.index] → 得到列基地址
 
 执行时:
+    // Table 在 finalize 后缓存一份列指针数组，生命周期 = Table 生命周期
+    // Table::column_ptrs_ 是 std::vector<void*>，在 finalize 时构建一次：
+    //   for (auto& col : columns) column_ptrs_.push_back(col.data());
+    // finalize 后 Column 的 typed vector 不再 push_back，data() 指针稳定
     RuntimeContext ctx;
-    ctx.column_ptrs = table.getColumnPointers()  // void*[] (每列的 Column.data())
+    ctx.column_ptrs = table.columnPtrs()         // 返回 column_ptrs_.data()
     ctx.row_count = table.row_count
     ctx.string_base = table.string_buffer.data() // VARCHAR offset 的基地址
     pipeline_func(&ctx)                          // JIT 函数直接访问
