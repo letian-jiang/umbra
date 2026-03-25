@@ -48,8 +48,9 @@ else
   cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="--coverage -Wall -Wextra"
   cmake --build build-debug -j"$(nproc)"
   cd build-debug && ctest --output-on-failure
-  lcov --capture --directory . --output-file coverage.info --ignore-errors mismatch
-  lcov --remove coverage.info '/usr/*' '*/third_party/*' '*/test/*' --output-file coverage.info
+  lcov --capture --directory . --output-file coverage.info --ignore-errors mismatch 2>/dev/null \
+    || lcov --capture --directory . --output-file coverage.info
+  lcov --remove coverage.info '/usr/*' '*/third_party/*' '*/test/*' '*/_deps/*' --output-file coverage.info
   COVERAGE=$(lcov --summary coverage.info 2>&1 | grep 'lines' | grep -oP '[\d.]+(?=%)')
   echo "Line coverage: ${COVERAGE}%"
   if awk "BEGIN{exit ($COVERAGE < 90.0) ? 0 : 1}"; then

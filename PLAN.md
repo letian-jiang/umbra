@@ -33,7 +33,7 @@ For each task:
 |------|-------------|--------|--------|-------|
 | 1 | Build System + Scaffold | [x] Done | 068c9fe | Coverage 95.7% |
 | 2 | Storage Layer | [x] Done | — | Coverage 91.5% |
-| 3 | Umbra IR | [ ] Not Started | — | — |
+| 3 | Umbra IR | [x] Done | — | Coverage 90.7% |
 | 4 | Interpreter Backend | [ ] Not Started | — | — |
 | 5 | Parser | [ ] Not Started | — | — |
 | 6 | Binder | [ ] Not Started | — | — |
@@ -139,7 +139,7 @@ Tasks are executed serially in the order listed below. Each task produces a comm
 
 **Design docs to update**: `doc/ir.md` if any encoding changes
 
-**Status**: [ ] Not Started
+**Status**: [x] Done
 
 ---
 
