@@ -55,6 +55,10 @@ FunctionId IRBuilder::getCurrentFunction() const {
     return currentFunction_;
 }
 
+void IRBuilder::setCurrentFunction(FunctionId func) {
+    currentFunction_ = func;
+}
+
 // ── Constants and arguments ──────────────────────────────────────────────────
 
 IROp IRBuilder::emitConst(TypeId type, uint64_t value) {

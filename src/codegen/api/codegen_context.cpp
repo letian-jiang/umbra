@@ -92,11 +92,21 @@ Bool CodegenContext::lor(Bool lhs, Bool rhs) {
 ir::FunctionId CodegenContext::registerHostFunction(const std::string& name, ir::HostFunction func,
                                                     ir::TypeId returnType,
                                                     const std::vector<ir::TypeId>& paramTypes) {
+    // Save current insertion point, since createFunction changes it.
+    auto savedBlock = builder_.getCurrentBlock();
+    auto savedFunction = builder_.getCurrentFunction();
+
     // We register on the builder side so the function gets an ID in the function table.
     // But the actual HostFunction is registered on the Program after finalize().
-    // For now, store it so we can register it later.
     auto id = builder_.createFunction(name, returnType, paramTypes);
     hostFuncs_.push_back({id, std::move(func)});
+
+    // Restore insertion point to the original function/block.
+    builder_.setCurrentFunction(savedFunction);
+    if (savedBlock != ir::INVALID_BLOCK) {
+        builder_.setInsertPoint(savedBlock);
+    }
+
     return id;
 }
 

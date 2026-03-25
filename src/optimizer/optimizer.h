@@ -32,6 +32,10 @@ class Optimizer {
     /// Optimize a bound logical plan, producing a physical plan with pipelines.
     OptimizeResult optimize(const binder::BindResult& bindResult);
 
+    /// Decompose a physical plan into pipelines.
+    /// Also used by PipelineExecutor and tests.
+    static std::vector<Pipeline> decomposePipelines(PhysicalOperator* root);
+
    private:
     // ── Node Allocation ─────────────────────────────────────────────────────
     std::vector<std::unique_ptr<PhysicalOperator>> ownedOps_;
@@ -57,11 +61,6 @@ class Optimizer {
     /// Convert logical plan tree to physical plan tree.
     PhysicalOperator* generatePhysicalPlan(const binder::BoundLogicalOperator* op,
                                            const std::set<uint32_t>& requiredColumns);
-
-    // ── Pass 4: Pipeline Decomposition ──────────────────────────────────────
-
-    /// Decompose a physical plan into pipelines.
-    static std::vector<Pipeline> decomposePipelines(PhysicalOperator* root);
 };
 
 }  // namespace umbra::optimizer
