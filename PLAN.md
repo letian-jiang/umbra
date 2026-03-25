@@ -38,7 +38,7 @@ For each task:
 | 5 | Parser | [x] Done | — | Coverage 90.8% |
 | 6 | Binder | [x] Done | — | Coverage 90.1% |
 | 7 | Optimizer | [x] Done | — | Coverage 90.0% |
-| 8 | Codegen API + SQL Values | [ ] Not Started | — | — |
+| 8 | Codegen API + SQL Values | [x] Done | — | Coverage 91.0% |
 | 9 | Tuples + Hash Table | [ ] Not Started | — | — |
 | 10 | Operator Translators + Pipeline | [ ] Not Started | — | — |
 | 11 | Flying Start JIT | [ ] Not Started | — | — |
@@ -255,7 +255,7 @@ Tasks are executed serially in the order listed below. Each task produces a comm
 
 **Design docs to update**: `doc/tidy-tuples.md` (Layers 4 & 5 sections)
 
-**Status**: [ ] Not Started
+**Status**: [x] Done
 
 ---
 
