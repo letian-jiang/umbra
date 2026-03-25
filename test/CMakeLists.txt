@@ -190,5 +190,35 @@ target_link_libraries(test_formatter PRIVATE
 )
 add_test(NAME formatter COMMAND test_formatter)
 
+# SQL: Q1 end-to-end tests
+add_executable(test_q1
+    sql/test_q1.cpp
+)
+target_link_libraries(test_q1 PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME q1 COMMAND test_q1)
+
+# SQL: Q1 variants (INTERVAL 60/90/120, edge cases)
+add_executable(test_q1_variants
+    sql/test_q1_variants.cpp
+)
+target_link_libraries(test_q1_variants PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME q1_variants COMMAND test_q1_variants)
+
+# Performance: Q1 benchmark
+add_executable(test_benchmark
+    perf/test_benchmark.cpp
+)
+target_link_libraries(test_benchmark PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME benchmark COMMAND test_benchmark)
+
 # Verify the main executable runs and exits 0 (pipe mode, no input)
 add_test(NAME main_runs COMMAND sh -c "echo '' | $<TARGET_FILE:umbra>")

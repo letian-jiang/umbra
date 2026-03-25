@@ -49,12 +49,12 @@ Bool CodegenContext::constBool(bool value) {
 
 Int8 CodegenContext::constInt8(int8_t value) {
     return {
-        builder_.emitConst(ir::TypeId::INT8, static_cast<uint64_t>(static_cast<uint8_t>(value)))};
+        builder_.emitConst(ir::TypeId::INT8, static_cast<uint64_t>(static_cast<int64_t>(value)))};
 }
 
 Int32 CodegenContext::constInt32(int32_t value) {
     return {
-        builder_.emitConst(ir::TypeId::INT32, static_cast<uint64_t>(static_cast<uint32_t>(value)))};
+        builder_.emitConst(ir::TypeId::INT32, static_cast<uint64_t>(static_cast<int64_t>(value)))};
 }
 
 Int64 CodegenContext::constInt64(int64_t value) {

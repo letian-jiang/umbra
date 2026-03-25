@@ -51,11 +51,20 @@ class InstructionView {
     }
 
     /// Read the constant payload as a uint64_t (for CONST instructions).
+    /// Sign-extends INT8 and INT32 values to match LOAD semantics.
     [[nodiscard]] uint64_t constPayload() const {
         uint64_t val = 0;
         uint32_t payloadOff = 2;  // after opcode + type, no args for CONST
         auto psize = constPayloadSize(type());
         std::memcpy(&val, buffer_ + payloadOff, psize);
+        // Sign-extend signed integer types so constants and loaded values
+        // have the same representation in 64-bit slots.
+        auto tid = type();
+        if (tid == TypeId::INT8) {
+            val = static_cast<uint64_t>(static_cast<int64_t>(static_cast<int8_t>(val)));
+        } else if (tid == TypeId::INT32) {
+            val = static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(val)));
+        }
         return val;
     }
 
