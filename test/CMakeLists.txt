@@ -100,5 +100,25 @@ target_link_libraries(test_sql_values PRIVATE
 )
 add_test(NAME sql_values COMMAND test_sql_values)
 
+# Tuples tests
+add_executable(test_tuples
+    unit/test_tuples.cpp
+)
+target_link_libraries(test_tuples PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME tuples COMMAND test_tuples)
+
+# Hash table tests
+add_executable(test_hash_table
+    unit/test_hash_table.cpp
+)
+target_link_libraries(test_hash_table PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME hash_table COMMAND test_hash_table)
+
 # Verify the main executable runs and exits 0
 add_test(NAME main_runs COMMAND umbra)

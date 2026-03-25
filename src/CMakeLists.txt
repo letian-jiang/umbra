@@ -20,6 +20,8 @@ add_library(umbra_lib STATIC
     optimizer/physical_plan_printer.cpp
     codegen/api/codegen_context.cpp
     codegen/sql_values/sql_value.cpp
+    codegen/tuples/tuple_layout.cpp
+    codegen/structures/hash_table.cpp
 )
 
 target_include_directories(umbra_lib PUBLIC

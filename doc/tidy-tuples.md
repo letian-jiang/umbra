@@ -285,6 +285,8 @@ UInt64 Tuples::hash(vector<SQLValue>& keys) {
 
 > **[MVP simplification]** 论文使用 `Data128` 类型将两路 CRC32 拼接成 128-bit 中间值再组合。MVP 去掉了 `Data128` 类型，改用两次独立的 CRC32 + 位运算组合。hash 质量足够用于 Q1 的 4 个 group。
 
+**Implementation**: `src/codegen/tuples/tuple_layout.h/.cpp`. `TupleLayout` 构造时计算 field offsets 和 null bitmap 位置。`pack()`/`unpack()` 使用 GEP + bitcast + store/load emit IR。null bitmap 使用 bit-level shift/or/and 操作逐 bit 打包。`hash()` 是静态方法，对小于 64-bit 的类型使用 `emitZExt`，对 64-bit 类型使用 `emitBitcast`。
+
 ---
 
 ## 5. Layer 2: Data Structures
@@ -338,6 +340,8 @@ class HashTableCodegen {
 其中步骤 3-5, 9-10 是生成的 IR 代码（使用 Layer 3 的 pack/unpack 和 Layer 4 的 compare），步骤 1, 6, 8 是对预编译 C++ host function 的 `call`。
 
 > **[MVP simplification]** 论文的 hash table 实现完全在生成代码中（包括 probing loop）。MVP 将 probing 逻辑放在预编译的 host function 中，只生成 key comparison 和 pack/unpack 的代码。这简化了代码生成，但增加了 call 开销。对 Q1 的 ~4 个 group 影响可忽略。
+
+**Implementation**: `src/codegen/structures/hash_table.h/.cpp`. `HashTable` 运行时类实现 open addressing with linear probing，slot 布局 `[occupied(1B)|hash(8B)|payload]`，load factor 70% 自动 resize。`HashTableCodegen` 的 `findOrInsert()` 生成三层结构：fast path（lookup 返回 null 直接 insert）、first-match check（比较第一个候选的 keys）、probe loop（loop + IfBuilder + probeNext host call）。`scan()` 通过 host function 获取 capacity/slotBuffer/stride，emit 一个 slot 遍历 loop，检查 occupied flag，对有效 slot 回调 callback。
 
 ### 5.2 Aggregate State
 
