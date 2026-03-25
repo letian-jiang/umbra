@@ -68,6 +68,7 @@ set_target_properties(libpg_query PROPERTIES
 )
 target_include_directories(libpg_query INTERFACE
     ${LIBPG_QUERY_SOURCE_DIR}
+    ${LIBPG_QUERY_SOURCE_DIR}/vendor
 )
 add_dependencies(libpg_query libpg_query_ext)
 

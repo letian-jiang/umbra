@@ -11,6 +11,9 @@ add_library(umbra_lib STATIC
     ir/builder.cpp
     ir/printer.cpp
     backend/interpreter/interpreter.cpp
+    parser/ast_context.cpp
+    parser/parser.cpp
+    parser/ast_printer.cpp
 )
 
 target_include_directories(umbra_lib PUBLIC
