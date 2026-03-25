@@ -81,16 +81,30 @@ struct StringValue {
 ## 3. Column
 
 ```cpp
+// type-erased column：内部持有 typed vector，对外暴露 void*
 struct Column {
-    std::vector<uint8_t> storage;   // 拥有列数据的内存（typed 数据的字节表示）
-    uint32_t elem_size;             // 每个元素的字节大小
+    // 实际存储是以下之一（用 std::variant 或继承均可）
+    // std::vector<int32_t>    — INTEGER, DATE
+    // std::vector<int64_t>    — BIGINT, DECIMAL
+    // std::vector<StringValue> — VARCHAR
+    // std::vector<int8_t>     — BOOLEAN
+    std::variant<
+        std::vector<int32_t>,
+        std::vector<int64_t>,
+        std::vector<StringValue>,
+        std::vector<int8_t>
+    > storage;
 
-    void* data() { return storage.data(); }   // 列数据起始地址
-    // data()[i] 位于 (char*)data() + i * elem_size
+    uint32_t elem_size;
+
+    void* data();       // 返回 std::get<vector<T>>(storage).data()
+    size_t size();      // 行数
 };
 ```
 
-`Column.storage` 是一个 `std::vector<uint8_t>`，**拥有**列数据的内存。加载期间用 typed `std::vector<T>` 累积，finalize 时通过 `memcpy` 或类型双关将数据移入 `storage`（详见 §6.3）。finalize 后 `storage` 不再修改，`data()` 返回的指针在 Table 生命周期内稳定。
+Column 内部持有 **typed `std::vector<T>`**，保证对齐（`vector<int64_t>` 天然 8-byte 对齐，`vector<int32_t>` 天然 4-byte 对齐）。对外通过 `data()` 暴露 `void*`，JIT 代码和 host 代码按 `T*` 访问时不存在对齐或 UB 问题。
+
+加载期间直接 `push_back` 到 Column 内部的 typed vector，finalize 时无需拷贝——vector 就是最终的存储（详见 §6.3）。
 
 列数据是连续内存，元素按行号密集排列，无 gap、无 null bitmap。
 
@@ -207,41 +221,40 @@ dbgen 输出 `|` 分隔的文本文件：
 ```
 loadTable("lineitem.tbl"):
     // === Phase 1: Accumulate ===
-    // 每列用 typed vector 累积，string_buffer 用 vector<char> 累积
-    vector<int32_t> col0_buf;      // l_orderkey
-    vector<int64_t> col4_buf;      // l_quantity (DECIMAL)
-    vector<StringValue> col8_buf;  // l_returnflag (VARCHAR)
-    vector<char> string_buf;       // 所有字符串的字符数据
+    // 每列直接 push_back 到 Column 内部的 typed vector
+    // string_buffer 用 vector<char> 累积
+    auto& col0 = std::get<vector<int32_t>>(table.columns[0].storage);   // l_orderkey
+    auto& col4 = std::get<vector<int64_t>>(table.columns[4].storage);   // l_quantity
+    auto& col8 = std::get<vector<StringValue>>(table.columns[8].storage); // l_returnflag
+    vector<char> string_buf;
     ...
 
     1. 读取文件，逐行解析
     2. 对每行：
        a. split by '|'
-       b. 对每个字段，根据 ColumnDef.type 解析并 push_back 到对应 vector：
-          - INTEGER:  col_buf.push_back(atoi(field))
-          - DECIMAL:  col_buf.push_back(parseDecimal(field, scale))
-          - DATE:     col_buf.push_back(daysSinceEpoch(parseDate(field)))
+       b. 对每个字段，根据 ColumnDef.type 解析并 push_back 到 Column 的 typed vector：
+          - INTEGER:  col_i32.push_back(atoi(field))
+          - DECIMAL:  col_i64.push_back(parseDecimal(field, scale))
+          - DATE:     col_i32.push_back(daysSinceEpoch(parseDate(field)))
           - VARCHAR:  uint32_t off = string_buf.size()
                       string_buf.insert(end, field.begin(), field.end())
-                      col_buf.push_back(StringValue{off, field.size()})
+                      col_sv.push_back(StringValue{off, (uint32_t)field.size()})
 
     // === Phase 2: Finalize ===
-    // 将 typed vector 的字节内容移入 Column.storage（Column 拥有内存）
+    // typed vector 已经在 Column 内部，无需拷贝
     3. 对每列：
-       auto& col = table.columns[i];
-       col.elem_size = sizeof(T);
-       col.storage.resize(col_buf.size() * sizeof(T));
-       memcpy(col.storage.data(), col_buf.data(), col.storage.size());
-       // col_buf 可以安全析构——数据已复制到 Column.storage 中
+       table.columns[i].elem_size = sizeof(T);
+       // Column.storage 就是 Phase 1 使用的 typed vector，数据已就位
     4. table.string_buffer = std::move(string_buf)
-    5. table.row_count = col0_buf.size()
+    5. table.row_count = std::get<vector<int32_t>>(table.columns[0].storage).size()
     6. 构建 Catalog entry
 ```
 
 关键点：
-- Phase 1 期间 typed vector 可能多次扩容，但 StringValue 中存的是 **offset** 而非指针，所以 string_buf 扩容不会导致悬空引用
-- Phase 2 将数据 memcpy 到 `Column.storage` 中，Column 拥有内存的所有权。typed vector 析构后 `Column.storage`（和 `data()` 指针）不受影响
-- Finalize 后 `Column.storage` 不再修改，`data()` 返回的指针在 Table 生命周期内稳定
+- Column 内部的 typed vector 既是加载期间的累积 buffer，也是最终存储——**零拷贝 finalize**
+- Phase 1 期间 vector 可能多次扩容，但 StringValue 中存的是 **offset** 而非指针，所以 string_buf 扩容不会导致悬空引用
+- Finalize 后不再向 vector push_back，`data()` 返回的指针在 Table 生命周期内稳定
+- 对齐由 typed vector 保证：`vector<int64_t>` 的 `data()` 天然 8-byte 对齐，JIT 按 `int64_t*` 访问无 UB
 
 ### 6.4 DECIMAL 解析
 
