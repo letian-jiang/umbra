@@ -31,13 +31,19 @@ struct SQLType {
     static SQLType boolean() { return {SQLTypeId::BOOLEAN}; }
 };
 
-/// String reference (non-owning pointer + length)
+/// String reference (non-owning pointer + length, for runtime use)
 struct StringRef {
     const char* data{nullptr};
     uint32_t length{0};
 
-    std::string_view view() const { return {data, length}; }
-    std::string toString() const { return std::string(data, length); }
+    [[nodiscard]] std::string_view view() const { return {data, length}; }
+    [[nodiscard]] std::string toString() const { return {data, length}; }
+};
+
+/// Storage format for VARCHAR columns: offset into Table.string_buffer
+struct StringValue {
+    uint32_t offset;  // byte offset into Table.string_buffer
+    uint32_t len;     // byte length
 };
 
 /// Date epoch: 2000-01-01
@@ -57,7 +63,7 @@ inline size_t typeSize(SQLTypeId id) {
         case SQLTypeId::DECIMAL:
             return sizeof(int64_t);
         case SQLTypeId::VARCHAR:
-            return sizeof(StringRef);
+            return sizeof(StringValue);
         case SQLTypeId::BOOLEAN:
             return sizeof(int8_t);
     }

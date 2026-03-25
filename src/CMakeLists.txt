@@ -1,6 +1,10 @@
 # UmbraDB library
 add_library(umbra_lib STATIC
     common/types.cpp
+    storage/column.cpp
+    storage/table.cpp
+    storage/tbl_loader.cpp
+    catalog/catalog.cpp
 )
 
 target_include_directories(umbra_lib PUBLIC
