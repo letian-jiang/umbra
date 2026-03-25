@@ -5,7 +5,7 @@
 测试策略围绕一个核心思路：**两个独立实现互相验证**。
 
 - IR 层：Interpreter vs Flying Start 必须对任何 IR 程序产生相同结果
-- SQL 层：我们的系统 vs DuckDB（differential oracle）必须对任何 SQL 产生相同结果集
+- SQL 层：对 **MVP 支持的 SQL 子集**（single-table SELECT + WHERE + GROUP BY + ORDER BY + supported aggregates），我们的系统 vs DuckDB（differential oracle）必须产生相同结果集
 
 ```
                     ┌──────────────────────────┐
