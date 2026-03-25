@@ -21,6 +21,15 @@ cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="--coverage"
 cmake --build build-debug -j$(nproc)
 ```
 
+Sanitizer build (ASan + UBSan):
+
+```bash
+cmake -B build-san -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
+cmake --build build-san -j$(nproc)
+cd build-san && ctest --output-on-failure
+```
+
 ## Test
 
 ```bash
@@ -56,7 +65,8 @@ Every commit must satisfy ALL of the following before being created:
 1. **Lint clean**: `clang-tidy` and `clang-format` report zero errors on all changed files
 2. **Compiles**: both Release and Debug builds succeed with zero warnings (`-Wall -Wextra -Werror`)
 3. **All tests pass**: `ctest` exits 0 — unit tests, IR tests, and SQL tests
-4. **Coverage thresholds**:
+4. **Sanitizers clean**: all tests pass under ASan + UBSan with zero errors
+5. **Coverage thresholds**:
    - New/changed code: **≥ 90% line coverage**
    - Full project: **≥ 90% line coverage**
 
@@ -78,7 +88,13 @@ find src -name '*.cpp' -o -name '*.h' | xargs clang-tidy -p build --warnings-as-
 # 4. Test
 cd build && ctest --output-on-failure
 
-# 5. Coverage (Debug build with --coverage)
+# 5. Sanitizers (ASan + UBSan)
+cmake -B build-san -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -Wall -Wextra"
+cmake --build build-san -j$(nproc)
+cd build-san && ctest --output-on-failure
+
+# 6. Coverage (Debug build with --coverage)
 cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="--coverage -Wall -Wextra"
 cmake --build build-debug -j$(nproc)
 cd build-debug && ctest --output-on-failure
