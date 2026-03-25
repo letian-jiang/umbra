@@ -5,7 +5,45 @@
 Serial implementation of a JIT-compiling OLAP database targeting TPC-H Q1 (SF=0.01, <3.1ms).
 13 sub-tasks, each independently developed, tested, and reviewed before the next begins.
 
-**Current state**: 11 design docs complete, 0% code implementation.
+---
+
+## Workflow Protocol
+
+The **main agent** is a pure dispatcher — it assigns tasks and relays pass/fail decisions but does **not** read or relay task specs or design docs. Each sub-agent reads what it needs directly from `PLAN.md` and `doc/`.
+
+For each task:
+
+1. **Main agent** spawns a **dev agent** with only the task number (e.g. "Implement Task 3")
+2. **Dev agent** reads the task spec from this file (`PLAN.md § Task N`) and all relevant `doc/*.md` design docs
+3. Dev agent implements code + tests, runs the full verification workflow (build, lint, test, sanitizer, coverage)
+4. Dev agent signals completion to main agent
+5. **Main agent** spawns a **review agent** with only the task number (e.g. "Review Task 3")
+6. **Review agent** reads the task spec from `PLAN.md § Task N` and relevant `doc/*.md`, then verifies:
+   - Full verification workflow passes (build, lint, test, sanitizer, coverage ≥ 90%)
+   - Code quality and correctness review
+   - Test coverage adequacy
+   - Design–doc consistency (code matches `doc/` and `CLAUDE.md`)
+7. If review **passes** → main agent commits, updates PLAN.md, moves to next task
+8. If review **fails** → main agent sends dev agent back for rework with the review feedback (max 3 retries)
+9. If 3 retries exhausted → notify developer for manual intervention
+
+## Progress Tracker
+
+| Task | Description | Status | Commit | Notes |
+|------|-------------|--------|--------|-------|
+| 1 | Build System + Scaffold | [x] Done | 068c9fe | Coverage 95.7% |
+| 2 | Storage Layer | [x] Done | — | Coverage 91.5% |
+| 3 | Umbra IR | [ ] Not Started | — | — |
+| 4 | Interpreter Backend | [ ] Not Started | — | — |
+| 5 | Parser | [ ] Not Started | — | — |
+| 6 | Binder | [ ] Not Started | — | — |
+| 7 | Optimizer | [ ] Not Started | — | — |
+| 8 | Codegen API + SQL Values | [ ] Not Started | — | — |
+| 9 | Tuples + Hash Table | [ ] Not Started | — | — |
+| 10 | Operator Translators + Pipeline | [ ] Not Started | — | — |
+| 11 | Flying Start JIT | [ ] Not Started | — | — |
+| 12 | EXPLAIN + Shell | [ ] Not Started | — | — |
+| 13 | E2E Integration + TPC-H Q1 | [ ] Not Started | — | — |
 
 ---
 
@@ -52,7 +90,7 @@ Tasks are executed serially in the order listed below. Each task produces a comm
 - `CMakeLists.txt` (top-level + subdirectory CMakeLists)
 - Third-party integration: Catch2 (v3, header-only), libpg_query, asmjit
 - `.clang-format` and `.clang-tidy` configuration files
-- Directory structure per `DESIGN.md` §6
+- Directory structure per `CLAUDE.md` § Architecture
 - `src/common/types.h` — basic type aliases and constants
 - `src/main.cpp` — minimal placeholder
 - `test/unit/test_smoke.cpp` — Catch2 smoke test that compiles and passes
@@ -340,39 +378,3 @@ Tasks are executed serially in the order listed below. Each task produces a comm
 **Design docs to update**: `doc/testing.md`, any docs with implementation deviations
 
 **Status**: [ ] Not Started
-
----
-
-## Progress Tracker
-
-| Task | Description | Status | Commit | Notes |
-|------|-------------|--------|--------|-------|
-| 1 | Build System + Scaffold | [x] Done | 068c9fe | Coverage 95.7% |
-| 2 | Storage Layer | [x] Done | — | Coverage 91.5% |
-| 3 | Umbra IR | [ ] Not Started | — | — |
-| 4 | Interpreter Backend | [ ] Not Started | — | — |
-| 5 | Parser | [ ] Not Started | — | — |
-| 6 | Binder | [ ] Not Started | — | — |
-| 7 | Optimizer | [ ] Not Started | — | — |
-| 8 | Codegen API + SQL Values | [ ] Not Started | — | — |
-| 9 | Tuples + Hash Table | [ ] Not Started | — | — |
-| 10 | Operator Translators + Pipeline | [ ] Not Started | — | — |
-| 11 | Flying Start JIT | [ ] Not Started | — | — |
-| 12 | EXPLAIN + Shell | [ ] Not Started | — | — |
-| 13 | E2E Integration + TPC-H Q1 | [ ] Not Started | — | — |
-
-## Workflow Protocol
-
-For each task:
-
-1. **Main agent** spawns a **dev agent** with task spec + relevant design docs
-2. Dev agent implements code + tests, runs build/lint/test/sanitizer/coverage checks
-3. Dev agent signals completion to main agent
-4. **Main agent** spawns a **review agent** to verify:
-   - Full test suite passes (build, lint, test, sanitizer, coverage ≥ 90%)
-   - Code quality and correctness review
-   - Test coverage adequacy
-   - Design doc consistency
-5. If review **passes** → main agent commits, updates PLAN.md, moves to next task
-6. If review **fails** → main agent sends dev agent back for rework (max 3 retries)
-7. If 3 retries exhausted → notify developer for manual intervention
