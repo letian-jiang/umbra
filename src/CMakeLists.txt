@@ -14,6 +14,8 @@ add_library(umbra_lib STATIC
     parser/ast_context.cpp
     parser/parser.cpp
     parser/ast_printer.cpp
+    binder/binder.cpp
+    binder/bound_plan_printer.cpp
 )
 
 target_include_directories(umbra_lib PUBLIC

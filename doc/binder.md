@@ -321,7 +321,7 @@ Q1 的 SELECT list 中混合了 group-by 列和 aggregate 表达式，需要分�
 Q1 有三个 AVG：`AVG(l_quantity)`, `AVG(l_extendedprice)`, `AVG(l_discount)`。
 其中 `SUM(l_quantity)` 和 `SUM(l_extendedprice)` 已经作为独立的 aggregate 出现在 SELECT list 中——**去重**，不重复计算。
 
-分解后的 aggregate 列表：
+分解后的 aggregate 列表（按 SELECT list 处理顺序生成，去重）：
 
 | # | Aggregate | 来源 |
 |---|-----------|------|
@@ -329,13 +329,15 @@ Q1 有三个 AVG：`AVG(l_quantity)`, `AVG(l_extendedprice)`, `AVG(l_discount)`�
 | 1 | SUM(l_extendedprice) | SELECT 直接 + AVG(l_extendedprice) 共用 |
 | 2 | SUM(l_extendedprice * (1 - l_discount)) | SELECT 直接 |
 | 3 | SUM(l_extendedprice * (1 - l_discount) * (1 + l_tax)) | SELECT 直接 |
-| 4 | SUM(l_discount) | AVG(l_discount) 分解 |
-| 5 | COUNT(*) | SELECT 直接 + 所有 AVG 共用 |
+| 4 | COUNT(*) | AVG(l_quantity) 分解时首次创建，后续 AVG + SELECT 共用 |
+| 5 | SUM(l_discount) | AVG(l_discount) 分解 |
+
+注：COUNT(*) 在 AVG(l_quantity) 分解时先于 SUM(l_discount)（AVG(l_discount) 分解时产生）被创建，因此 COUNT(*) 在 index 4，SUM(l_discount) 在 index 5。
 
 Projection 层将 aggregate 结果组合为最终输出：
-- `avg_qty` = aggregate[0] / aggregate[5]
-- `avg_price` = aggregate[1] / aggregate[5]
-- `avg_disc` = aggregate[4] / aggregate[5]
+- `avg_qty` = aggregate[0] / aggregate[4]
+- `avg_price` = aggregate[1] / aggregate[4]
+- `avg_disc` = aggregate[5] / aggregate[4]
 
 ### 7.2 Validation
 
@@ -360,22 +362,22 @@ LogicalSort
             agg_ref(1),                               // sum_base_price
             agg_ref(2),                               // sum_disc_price
             agg_ref(3),                               // sum_charge
-            BinaryExpr(DIV, agg_ref(0), agg_ref(5)),  // avg_qty
-            BinaryExpr(DIV, agg_ref(1), agg_ref(5)),  // avg_price
-            BinaryExpr(DIV, agg_ref(4), agg_ref(5)),  // avg_disc
-            agg_ref(5),                               // count_order
+            BinaryExpr(DIV, agg_ref(0), agg_ref(4)),  // avg_qty
+            BinaryExpr(DIV, agg_ref(1), agg_ref(4)),  // avg_price
+            BinaryExpr(DIV, agg_ref(5), agg_ref(4)),  // avg_disc
+            agg_ref(4),                               // count_order
         ]
         │
         └── LogicalAggregate
               group_by: [BoundColumnRef(0, 8), BoundColumnRef(0, 9)]
               aggregates: [
-                  SUM(BoundColumnRef(0, 4)),                          // l_quantity
-                  SUM(BoundColumnRef(0, 5)),                          // l_extendedprice
-                  SUM(MUL(col(5), SUB(lit(1), col(6)))),              // price*(1-disc)
+                  SUM(BoundColumnRef(0, 4)),                          // [0] l_quantity
+                  SUM(BoundColumnRef(0, 5)),                          // [1] l_extendedprice
+                  SUM(MUL(col(5), SUB(lit(1), col(6)))),              // [2] price*(1-disc)
                   SUM(MUL(MUL(col(5), SUB(lit(1), col(6))),
-                          ADD(lit(1), col(7)))),                      // ..*(1+tax)
-                  SUM(BoundColumnRef(0, 6)),                          // l_discount
-                  COUNT(*)
+                          ADD(lit(1), col(7)))),                      // [3] ..*(1+tax)
+                  COUNT(*)                                            // [4]
+                  SUM(BoundColumnRef(0, 6)),                          // [5] l_discount
               ]
               │
               └── LogicalFilter
