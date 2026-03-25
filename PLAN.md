@@ -60,7 +60,7 @@ Tasks are executed serially in the order listed below. Each task produces a comm
 
 **Design docs to update**: None (no design changes)
 
-**Status**: [ ] Not Started
+**Status**: [x] Done — commit 068c9fe
 
 ---
 
@@ -80,7 +80,7 @@ Tasks are executed serially in the order listed below. Each task produces a comm
 
 **Design docs to update**: `doc/storage.md` if any implementation deviations
 
-**Status**: [ ] Not Started
+**Status**: [x] Done
 
 ---
 
@@ -347,8 +347,8 @@ Tasks are executed serially in the order listed below. Each task produces a comm
 
 | Task | Description | Status | Commit | Notes |
 |------|-------------|--------|--------|-------|
-| 1 | Build System + Scaffold | [ ] Not Started | — | — |
-| 2 | Storage Layer | [ ] Not Started | — | — |
+| 1 | Build System + Scaffold | [x] Done | 068c9fe | Coverage 95.7% |
+| 2 | Storage Layer | [x] Done | — | Coverage 91.5% |
 | 3 | Umbra IR | [ ] Not Started | — | — |
 | 4 | Interpreter Backend | [ ] Not Started | — | — |
 | 5 | Parser | [ ] Not Started | — | — |

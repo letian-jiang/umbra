@@ -24,7 +24,7 @@ TEST_CASE("Type system basics", "[types]") {
         REQUIRE(typeSize(SQLTypeId::BIGINT) == 8);
         REQUIRE(typeSize(SQLTypeId::DATE) == 4);
         REQUIRE(typeSize(SQLTypeId::DECIMAL) == 8);
-        REQUIRE(typeSize(SQLTypeId::VARCHAR) == sizeof(StringRef));
+        REQUIRE(typeSize(SQLTypeId::VARCHAR) == sizeof(StringValue));
         REQUIRE(typeSize(SQLTypeId::BOOLEAN) == 1);
     }
 
