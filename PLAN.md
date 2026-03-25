@@ -37,7 +37,7 @@ For each task:
 | 4 | Interpreter Backend | [x] Done | — | Coverage 93.1% |
 | 5 | Parser | [x] Done | — | Coverage 90.8% |
 | 6 | Binder | [x] Done | — | Coverage 90.1% |
-| 7 | Optimizer | [ ] Not Started | — | — |
+| 7 | Optimizer | [x] Done | — | Coverage 90.0% |
 | 8 | Codegen API + SQL Values | [ ] Not Started | — | — |
 | 9 | Tuples + Hash Table | [ ] Not Started | — | — |
 | 10 | Operator Translators + Pipeline | [ ] Not Started | — | — |
@@ -230,7 +230,7 @@ Tasks are executed serially in the order listed below. Each task produces a comm
 
 **Design docs to update**: `doc/optimizer.md` if any rule changes
 
-**Status**: [ ] Not Started
+**Status**: [x] Done
 
 ---
 
