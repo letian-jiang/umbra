@@ -10,6 +10,7 @@ add_library(umbra_lib STATIC
     ir/program.cpp
     ir/builder.cpp
     ir/printer.cpp
+    backend/interpreter/interpreter.cpp
 )
 
 target_include_directories(umbra_lib PUBLIC
