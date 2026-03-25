@@ -18,6 +18,8 @@ add_library(umbra_lib STATIC
     binder/bound_plan_printer.cpp
     optimizer/optimizer.cpp
     optimizer/physical_plan_printer.cpp
+    codegen/api/codegen_context.cpp
+    codegen/sql_values/sql_value.cpp
 )
 
 target_include_directories(umbra_lib PUBLIC

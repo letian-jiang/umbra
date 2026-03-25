@@ -80,5 +80,25 @@ target_link_libraries(test_optimizer PRIVATE
 )
 add_test(NAME optimizer COMMAND test_optimizer)
 
+# Codegen API tests
+add_executable(test_codegen_api
+    unit/test_codegen_api.cpp
+)
+target_link_libraries(test_codegen_api PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME codegen_api COMMAND test_codegen_api)
+
+# SQL Values tests
+add_executable(test_sql_values
+    unit/test_sql_values.cpp
+)
+target_link_libraries(test_sql_values PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME sql_values COMMAND test_sql_values)
+
 # Verify the main executable runs and exits 0
 add_test(NAME main_runs COMMAND umbra)
