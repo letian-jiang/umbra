@@ -41,7 +41,7 @@
 | `date_epoch` | `"2000-01-01"` → `0` |
 | `date_negative` | `"1998-01-01"` → 负数 |
 | `tbl_load` | 加载 lineitem.tbl 前几行，验证每列的值和 row_count |
-| `varchar_load` | 加载后 StringValue.ptr 指向正确字符，len 正确 |
+| `varchar_load` | 加载后 StringValue.offset + string_buffer.data() 指向正确字符，len 正确 |
 
 ### 2.2 Parser
 
