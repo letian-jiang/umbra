@@ -36,7 +36,7 @@ For each task:
 | 3 | Umbra IR | [x] Done | — | Coverage 90.7% |
 | 4 | Interpreter Backend | [x] Done | — | Coverage 93.1% |
 | 5 | Parser | [x] Done | — | Coverage 90.8% |
-| 6 | Binder | [ ] Not Started | — | — |
+| 6 | Binder | [x] Done | — | Coverage 90.1% |
 | 7 | Optimizer | [ ] Not Started | — | — |
 | 8 | Codegen API + SQL Values | [ ] Not Started | — | — |
 | 9 | Tuples + Hash Table | [ ] Not Started | — | — |
@@ -209,7 +209,7 @@ Tasks are executed serially in the order listed below. Each task produces a comm
 
 **Design docs to update**: `doc/binder.md` if any binding rule changes
 
-**Status**: [ ] Not Started
+**Status**: [x] Done
 
 ---
 
