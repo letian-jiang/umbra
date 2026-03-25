@@ -11,6 +11,10 @@ add_library(umbra_lib STATIC
     ir/builder.cpp
     ir/printer.cpp
     backend/interpreter/interpreter.cpp
+    backend/flying_start/live_span.cpp
+    backend/flying_start/register_alloc.cpp
+    backend/flying_start/optimizations.cpp
+    backend/flying_start/translator.cpp
     parser/ast_context.cpp
     parser/parser.cpp
     parser/ast_printer.cpp

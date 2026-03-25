@@ -140,5 +140,25 @@ target_link_libraries(test_pipeline PRIVATE
 )
 add_test(NAME pipeline COMMAND test_pipeline)
 
+# Flying Start JIT tests
+add_executable(test_flying_start
+    ir/test_flying_start.cpp
+)
+target_link_libraries(test_flying_start PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME flying_start COMMAND test_flying_start)
+
+# JIT Optimizations tests
+add_executable(test_jit_optimizations
+    ir/test_jit_optimizations.cpp
+)
+target_link_libraries(test_jit_optimizations PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME jit_optimizations COMMAND test_jit_optimizations)
+
 # Verify the main executable runs and exits 0
 add_test(NAME main_runs COMMAND umbra)

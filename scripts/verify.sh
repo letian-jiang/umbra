@@ -27,7 +27,7 @@ cmake --build build -j"$(nproc)"
 
 # 3. Lint
 step "3/6 clang-tidy"
-find src -name '*.cpp' -o -name '*.h' | xargs clang-tidy -p build --warnings-as-errors='*'
+find src -name '*.cpp' -o -name '*.h' | xargs clang-tidy -p build --warnings-as-errors='*' --header-filter='^.*/src/.*'
 
 # 4. Test
 step "4/6 Test (Release)"

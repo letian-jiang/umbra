@@ -41,7 +41,7 @@ For each task:
 | 8 | Codegen API + SQL Values | [x] Done | — | Coverage 91.0% |
 | 9 | Tuples + Hash Table | [x] Done | — | Coverage 91.9% |
 | 10 | Operator Translators + Pipeline | [x] Done | — | Coverage 90.2% |
-| 11 | Flying Start JIT | [ ] Not Started | — | — |
+| 11 | Flying Start JIT | [x] Done | — | Coverage 90.0% |
 | 12 | EXPLAIN + Shell | [ ] Not Started | — | — |
 | 13 | E2E Integration + TPC-H Q1 | [ ] Not Started | — | — |
 
@@ -328,7 +328,7 @@ Tasks are executed serially in the order listed below. Each task produces a comm
 
 **Design docs to update**: `doc/flying-start.md` if any translation rules change
 
-**Status**: [ ] Not Started
+**Status**: [x] Done
 
 ---
 
