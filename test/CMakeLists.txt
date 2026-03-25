@@ -70,5 +70,15 @@ target_link_libraries(test_binder PRIVATE
 )
 add_test(NAME binder COMMAND test_binder)
 
+# Optimizer tests
+add_executable(test_optimizer
+    unit/test_optimizer.cpp
+)
+target_link_libraries(test_optimizer PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME optimizer COMMAND test_optimizer)
+
 # Verify the main executable runs and exits 0
 add_test(NAME main_runs COMMAND umbra)
