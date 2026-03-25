@@ -120,5 +120,25 @@ target_link_libraries(test_hash_table PRIVATE
 )
 add_test(NAME hash_table COMMAND test_hash_table)
 
+# Operator tests
+add_executable(test_operators
+    unit/test_operators.cpp
+)
+target_link_libraries(test_operators PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME operators COMMAND test_operators)
+
+# Pipeline tests
+add_executable(test_pipeline
+    ir/test_pipeline.cpp
+)
+target_link_libraries(test_pipeline PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME pipeline COMMAND test_pipeline)
+
 # Verify the main executable runs and exits 0
 add_test(NAME main_runs COMMAND umbra)

@@ -22,6 +22,13 @@ add_library(umbra_lib STATIC
     codegen/sql_values/sql_value.cpp
     codegen/tuples/tuple_layout.cpp
     codegen/structures/hash_table.cpp
+    codegen/operators/table_scan.cpp
+    codegen/operators/hash_aggregate.cpp
+    codegen/operators/projection.cpp
+    codegen/operators/sort.cpp
+    codegen/operators/result_writer.cpp
+    execution/result_collector.cpp
+    execution/pipeline.cpp
 )
 
 target_include_directories(umbra_lib PUBLIC

@@ -38,6 +38,9 @@ class IRBuilder {
     /// Get the current function ID.
     [[nodiscard]] FunctionId getCurrentFunction() const;
 
+    /// Set the current function ID (for restoring after host function registration).
+    void setCurrentFunction(FunctionId func);
+
     // ── Constant and argument instructions ────────────────────────────
 
     /// Emit a constant instruction. Deduplicates: same (type,value) → same IROp.

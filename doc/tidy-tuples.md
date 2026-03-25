@@ -468,20 +468,37 @@ produce(context):
     })
 ```
 
-### 6.4 ResultOperator
+### 6.4 ResultWriterTranslator
 
-Pipeline 的根节点。接收 tuple，写入结果缓冲区。
+Pipeline 的根节点（sink）。接收 tuple，将每个 SQLValue sign-extend 到 Int64 后写入结果缓冲区。
+
+**Implementation**: `src/codegen/operators/result_writer.h/.cpp`.
 
 ```
 consume(context, tuple):
-    for each SQLValue in tuple:
-        Ptr<T> outSlotPtr = resultBuffer + currentOffset
-        outSlotPtr.store(val.value)
-        currentOffset += sizeof(T)
-    rowCount += 1
+    Ptr<Int64> bufPtr = load(RuntimeContext.resultBuffer)
+    Int64 rowCount = load(RuntimeContext.resultRowCount)
+    for each SQLValue val in tuple:
+        Int64 asI64 = sext_or_bitcast(val.value)
+        buf[rowCount * numCols + colIdx].store(asI64)
+    store(RuntimeContext.resultRowCount, rowCount + 1)
 ```
 
-### 6.5 Q1 的完整 Pipeline 调用链
+### 6.5 SortTranslator
+
+**Implementation**: `src/codegen/operators/sort.h/.cpp`.
+
+For Q1, the sort is a codegen passthrough. Sorting is done post-pipeline by the `ResultCollector` on the host side, since the result set is tiny (~4 rows). The `SortTranslator` simply delegates `produce()` to its child and `consume()` to its parent.
+
+### 6.6 ProjectionTranslator
+
+**Implementation**: `src/codegen/operators/projection.h/.cpp`.
+
+Evaluates projection expressions over the input tuple from the hash aggregate scan. Expressions reference group-by keys via `BoundGroupRef` and aggregate results via `BoundAggRef`. Supports `BinaryExpr`, `Literal`, `Cast` in projection expressions.
+
+The number of group-by keys is inferred at codegen time by scanning the input tuple for the boundary between non-BIGINT group keys and BIGINT aggregate states.
+
+### 6.7 Q1 的完整 Pipeline 调用链
 
 **Pipeline 1:**
 ```
@@ -522,37 +539,48 @@ ResultOperator.produce()
 
 ## 7. CompilationContext
 
+**Implementation**: `src/codegen/operators/operator_translator.h` (struct `CompilationContext`).
+
 Operator translator 之间共享的编译期上下文：
 
 ```
 CompilationContext:
-    IRBuilder& builder          // IR builder 引用
-    Catalog& catalog            // 表元数据
-    Pipeline& currentPipeline   // 当前正在编译的 pipeline
-
-    // 运行时上下文指针（作为 JIT 函数的参数传入）
-    Ptr<Int8> runtimeCtx        // 包含: table pointers, hash table pointers,
-                                //       result buffer pointer, etc.
+    CodegenContext& codegen     // Layer 5 typed IR builder
+    Ptr<Int8> runtimeCtx       // 运行时上下文指针（JIT 函数参数）
 ```
 
-每个 pipeline 编译为一个 IR function，其签名为 `void pipeline_N(RuntimeContext* ctx)`。运行时上下文包含所有需要的指针。
+每个 pipeline 编译为一个 IR function，其签名为 `void pipeline_N(RuntimeContext* ctx)`。RuntimeContext 包含 column pointers, row count, hash table pointer, result buffer pointer, 和 result row count。
+
+> **[Implementation note]** 原设计包含 `Catalog& catalog` 和 `Pipeline& currentPipeline`。实际实现中，catalog 信息通过 `PhysicalOperator` 节点传递（如 `PhysicalTableScan.table`），pipeline 结构由 `PipelineExecutor` 管理，因此 `CompilationContext` 简化为只持有 `CodegenContext` 和 `runtimeCtx`。
 
 ---
 
 ## 8. Pipeline Execution
 
-```
-1. 对每个 pipeline:
-   a. 调用 Tidy Tuples 生成 IR function
-   b. IR Builder finalize → 完成的 IR Program
-   c. 选择 backend:
-      - Interpreter: 直接解释执行
-      - Flying Start: 编译为 x86-64 → 获得函数指针
-   d. 调用函数指针 / 解释执行，传入 RuntimeContext
+**Implementation**: `src/execution/pipeline.h/.cpp` (`PipelineExecutor`), `src/execution/result_collector.h/.cpp` (`ResultCollector`).
 
-2. Pipeline 间通过 RuntimeContext 中的共享数据结构通信
-   (Pipeline 1 写入 hash table → Pipeline 2 读取 hash table)
 ```
+1. PipelineExecutor.execute(OptimizeResult, Table, ResultCollector):
+   a. executeBuildPipeline:
+      - Create TableScanTranslator + HashAggregateTranslator
+      - Wire produce/consume chain
+      - Generate IR via CodegenContext
+      - Finalize → IR Program
+      - Execute via Interpreter, passing RuntimeContext
+   b. executeScanPipeline:
+      - Create ProjectionTranslator + SortTranslator + ResultWriterTranslator
+      - HashAggregateTranslator.produceScan() drives the chain
+      - Generate IR, finalize, execute via Interpreter
+      - Materialize results from buffer → ResultCollector
+      - Host-side sort on materialized rows
+
+2. Pipeline 间通过 RuntimeContext 中的 HashTable 指针通信
+   (Pipeline 0 写入 hash table → Pipeline 1 读取 hash table)
+
+3. ResultCollector 收集输出行，支持 host-side 排序
+```
+
+> **[Implementation note]** `CodegenContext.registerHostFunction` 调用 `IRBuilder.createFunction` 会改变当前插入点。实现中在注册前后保存/恢复插入点，确保 host function 注册不影响正在生成的 pipeline 函数代码。
 
 ---
 
