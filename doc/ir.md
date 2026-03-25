@@ -171,24 +171,25 @@ Block Buffer                       Instruction Buffer
 
 Functions are stored consecutively, but each function only records the **offset of its entry basic block**（论文 §3.2: "Each function, however, only contains the offset of the first basic block"）. All other blocks belonging to the function are discovered by following branch targets from the entry block — there is no explicit block list.
 
-论文中 function 只存一个字段：
+论文中 function 只存一个字段（§3.2: "Each function, however, only contains the offset of the first basic block"）。MVP 保持 hot-path 结构与论文一致，将 backend 和调试所需的附加信息放入独立的 side table。
+
+**Hot-path 结构**（存储在 Function Table 中，paper-faithful）：
 
 ```
-FunctionEntry (paper-faithful):
-    uint32_t entry_block_offset;  // byte offset of the entry basic block in block storage
+FunctionEntry:
+    uint32_t entry_block_offset;  // byte offset of the entry basic block in block buffer
 ```
 
-> **[MVP deviation]** MVP 在 FunctionEntry 中附加了 cold metadata，方便 backend 使用和调试。这些字段不在论文的 hot-path 结构描述中：
->
-> ```
-> FunctionEntry (MVP):
->     uint32_t entry_block_offset;  // paper-faithful
->     uint32_t num_params;          // MVP: backend 需要知道参数数量来处理 FunArg
->     TypeId return_type;           // MVP: backend 需要知道返回类型来 emit ret
->     std::string name;             // MVP: debug/profiling 用（perf jit, GDB）
-> ```
->
-> 另一种做法是从 entry block 的 `FunArg` 指令中推导 `num_params`，从 `ret` 指令中推导 `return_type`，将 `name` 放在独立的 debug info 结构中。MVP 选择冗余存储以简化实现。
+**Side table**（独立存储，不影响 hot-path 布局）：
+
+```
+FunctionMeta:
+    uint32_t num_params;          // 参数数量（也可从 entry block 的 FunArg 指令数推导）
+    TypeId return_type;           // 返回类型（也可从 ret 指令推导）
+    std::string name;             // debug/profiling 用（perf jit, GDB）
+```
+
+`FunctionMeta` 按 function index 索引，与 `FunctionEntry` 一一对应。Backend 在开始编译某个 function 时查询一次 `FunctionMeta`，之后不再访问。
 
 To enumerate all blocks of a function, start from `entry_block_offset` and transitively follow all branch/condbr/switch targets. This is the same traversal backends must perform anyway.
 

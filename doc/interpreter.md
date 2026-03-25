@@ -76,31 +76,45 @@ uint64_t Interpreter::execute(Program& program, FunctionId func,
     initFunArgs(fn, args);
 
     // 3. 从 entry block 开始执行
-    uint32_t current_block = fn.entry_block_offset;
-    return executeFrom(program, current_block);
+    return executeFrom(program, fn.entry_block_offset);
 }
 ```
 
 ### 3.2 Block 执行循环
 
+主循环维护两个状态：`block_off`（当前 block 在 block buffer 中的 byte offset）和 `prev_block_off`（上一个 block 的 offset，用于 PHI resolution）。
+
+进入每个 block 的执行分为两步：
+1. **Step 1**: 调用 `resolvePhis` 处理 block 开头的所有 PHI 指令（§3.3）
+2. **Step 2**: 逐条执行剩余的非 PHI 指令，直到遇到 terminator
+
+这两步严格分离——主循环不会对 PHI 调用 `executeInst`，PHI 只由 `resolvePhis` 处理。
+
 ```cpp
 uint64_t Interpreter::executeFrom(Program& program, uint32_t block_off) {
+    uint32_t prev_block_off = INVALID;   // 首次进入 entry block 无 predecessor
+
     while (true) {
-        // 解析当前 block（从 block_buffer 读取 instruction offset 序列）
-        uint32_t pos = block_off;
+        // Step 1: resolve PHIs, 返回第一条非 PHI 指令的 pos
+        uint32_t pos = resolvePhis(program, block_off, prev_block_off);
+
+        // Step 2: execute non-PHI instructions
         while (true) {
             uint32_t inst_off = readU32(program.block_buffer, pos);
             pos += 4;
 
             auto inst = decodeInst(program.inst_buffer, inst_off);
+            assert(!isPhi(inst.opcode));   // PHI 已被 Step 1 消费
+
             ExecuteResult result = executeInst(inst, inst_off);
 
             if (result.type == CONTINUE) {
-                continue;   // 下一条指令
+                continue;
             }
             if (result.type == BRANCH) {
-                block_off = result.target_block_off;  // byte offset in block buffer
-                break;      // 跳转到新 block
+                prev_block_off = block_off;              // 记录来源
+                block_off = result.target_block_off;     // 跳转目标
+                break;
             }
             if (result.type == RETURN) {
                 return result.return_value;
@@ -121,50 +135,59 @@ struct ExecuteResult {
 };
 ```
 
-### 3.3 PHI 处理
+### 3.3 PHI Resolution
 
-进入新 block 时，需要先处理该 block 开头的 PHI 指令。PHI 根据"从哪个 predecessor block 跳来"选择对应的值。
+`resolvePhis` 在进入 block 时被调用，处理 block 开头的所有 PHI 指令，返回第一条非 PHI 指令在 block_buffer 中的 pos。
+
+**Parallel semantics**: 多个 PHI 可能互相引用（如 swap：a←b, b←a）。必须先读出所有 PHI 的输入值到临时数组，再批量写入 slots，避免写入顺序影响结果。
 
 ```cpp
-// 在 BRANCH 跳转时记录来源 block
-uint32_t prev_block_off = block_off;   // 跳转前的 block
-block_off = result.target_block_off;    // 跳转目标
+uint32_t Interpreter::resolvePhis(Program& program, uint32_t block_off,
+                                   uint32_t prev_block_off) {
+    uint32_t pos = block_off;
 
-// 进入新 block 后，先处理 PHI
-pos = block_off;
-while (true) {
-    uint32_t inst_off = readU32(program.block_buffer, pos);
-    auto inst = decodeInst(program.inst_buffer, inst_off);
-    if (!isPhi(inst.opcode)) break;   // PHI 只在 block 开头
-
-    // 在 PHI 的 (block, value) 对中找到 prev_block_off 对应的值
-    for (int i = 0; i < phiIncomingCount(inst.opcode); i++) {
-        uint32_t incoming_block = inst.arg(i * 2);      // block buffer offset
-        uint32_t incoming_value = inst.arg(i * 2 + 1);  // instruction offset
-        if (incoming_block == prev_block_off) {
-            slots[inst_off] = slots[incoming_value];
-            break;
+    // 如果没有 predecessor（entry block 首次进入），跳过所有 PHI
+    if (prev_block_off == INVALID) {
+        while (true) {
+            uint32_t inst_off = readU32(program.block_buffer, pos);
+            auto inst = decodeInst(program.inst_buffer, inst_off);
+            if (!isPhi(inst.opcode)) return pos;
+            pos += 4;
         }
     }
-    pos += 4;
+
+    // Phase 1: 收集所有 PHI 的 (dst_slot, src_value)，不写入 slots
+    std::vector<std::pair<uint32_t, ValueSlot>> phi_results;
+    while (true) {
+        uint32_t inst_off = readU32(program.block_buffer, pos);
+        auto inst = decodeInst(program.inst_buffer, inst_off);
+        if (!isPhi(inst.opcode)) break;
+
+        for (int i = 0; i < phiIncomingCount(inst.opcode); i++) {
+            uint32_t incoming_block = inst.arg(i * 2);
+            uint32_t incoming_value = inst.arg(i * 2 + 1);
+            if (incoming_block == prev_block_off) {
+                phi_results.push_back({inst_off, slots[incoming_value]});
+                break;
+            }
+        }
+        pos += 4;
+    }
+
+    // Phase 2: 批量写入（parallel assignment）
+    for (auto& [dst, val] : phi_results) {
+        slots[dst] = val;
+    }
+
+    return pos;  // 第一条非 PHI 指令的 pos
 }
 ```
 
-注意 PHI 的 parallel semantics：多个 PHI 可能互相引用（如 swap：a←b, b←a）。解决方法是先将所有 PHI 的输入值读出到临时数组，再写入 slots：
-
-```cpp
-// 安全的 parallel PHI resolution
-std::vector<std::pair<uint32_t, ValueSlot>> phi_results;
-while (isPhi(currentInst)) {
-    uint32_t dst = inst_off;
-    ValueSlot src = lookupPhiIncoming(inst, prev_block_off);
-    phi_results.push_back({dst, src});
-    // advance to next instruction...
-}
-for (auto& [dst, val] : phi_results) {
-    slots[dst] = val;
-}
-```
+**不变量**：
+- PHI 只出现在 block 开头，且连续排列
+- `resolvePhis` 消费所有 PHI 后返回的 pos 指向第一条非 PHI 指令
+- 主循环 (§3.2 Step 2) 从该 pos 开始，assert 不会遇到 PHI
+- `executeInst` 的 switch 中不需要 PHI 的 case——如果触达则 assert fail
 
 ---
 

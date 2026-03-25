@@ -45,7 +45,7 @@ Storage 层管理内存中的表数据和元数据。MVP 采用最简单的纯�
 | BIGINT | `int64_t` | 8B | 原样存储 | |
 | DECIMAL(p,s) | `int64_t` | 8B | Scaled integer: value × 10^s | s 记录在 ColumnDef.type 中 |
 | DATE | `int32_t` | 4B | 距 epoch 的天数 | epoch = 2000-01-01 |
-| VARCHAR(n) | `StringValue` | 16B | `{const char* ptr, uint32_t len, uint32_t _pad}` | 指向 string buffer |
+| VARCHAR(n) | `StringValue` | 8B | `{uint32_t offset, uint32_t len}` | offset into string buffer |
 | BOOLEAN | `int8_t` | 1B | 0 或 1 | 仅内部使用 |
 
 ### 2.1 DECIMAL
@@ -67,15 +67,14 @@ Q1 的 `DATE '1998-09-02'` 在 binder 阶段被 constant fold 为对应的 `int3
 
 ```cpp
 struct StringValue {
-    const char* ptr;    // 指向 string buffer 中的字符数据（不以 \0 结尾）
+    uint32_t offset;    // 字节偏移量，指向 Table.string_buffer 中的位置
     uint32_t len;       // 字节长度
-    uint32_t _pad;      // 填充到 16 字节对齐
 };
 ```
 
-**定长 16 字节**——每行的 StringValue 占固定大小，指针指向外部的 string buffer。这使得列数组仍然是定长的，可以用 `base + row_idx * 16` 直接寻址。
+**定长 8 字节**——每行的 StringValue 占固定大小，可以用 `base + row_idx * 8` 直接寻址。`offset` 是相对于 `Table.string_buffer.data()` 的偏移量，而非裸指针。
 
-字符数据本身存储在 Table 级别的 string buffer 中，加载时一次性分配。
+字符数据存储在 Table 级别的 string buffer 中。加载期间 string_buffer 可能因 `push_back` 扩容导致基地址变化，用 offset 而非指针就不存在悬空引用问题。JIT 访问时，先从 RuntimeContext 获取 `string_buffer.data()` 基地址，再加上 offset 得到实际指针。
 
 ---
 
@@ -83,13 +82,15 @@ struct StringValue {
 
 ```cpp
 struct Column {
-    void* data;           // 指向列数据数组的起始地址
+    void* data;           // 指向列数据数组的起始地址（finalize 后不再变化）
     uint32_t elem_size;   // 每个元素的字节大小
     // data[i] 位于 (char*)data + i * elem_size
 };
 ```
 
-列数据是一段 `malloc`/`new` 分配的连续内存。元素按行号密集排列，无 gap、无 null bitmap。
+列数据是一段连续内存，元素按行号密集排列，无 gap、无 null bitmap。
+
+**加载期间**列数据用 typed `std::vector<T>` 累积（如 `std::vector<int32_t>`），加载完成后 **finalize** 为固定大小的 `Column`：将 vector 的 data 指针转移到 `Column.data`，此后不再修改。详见 §6.3。
 
 > **[MVP simplification]** Q1 的 lineitem 表没有 NULL 值。MVP 不在 Column 级别存储 null bitmap。SQL Values 层的 null_flag 始终为 `const false`。如果未来支持含 NULL 的表，需要在 Column 中增加 `uint8_t* null_bitmap`（1 bit per row）。
 
@@ -135,19 +136,19 @@ struct Table {
 | l_extendedprice (5) | int64 | 8B | 480 KB |
 | l_discount (6) | int64 | 8B | 480 KB |
 | l_tax (7) | int64 | 8B | 480 KB |
-| l_returnflag (8) | StringValue | 16B | 960 KB |
-| l_linestatus (9) | StringValue | 16B | 960 KB |
+| l_returnflag (8) | StringValue | 8B | 480 KB |
+| l_linestatus (9) | StringValue | 8B | 480 KB |
 | l_shipdate (10) | int32 | 4B | 240 KB |
 | l_commitdate (11) | int32 | 4B | 240 KB |
 | l_receiptdate (12) | int32 | 4B | 240 KB |
-| l_shipinstruct (13) | StringValue | 16B | 960 KB |
-| l_shipmode (14) | StringValue | 16B | 960 KB |
-| l_comment (15) | StringValue | 16B | 960 KB |
-| **列数据合计** | | | **~7.6 MB** |
+| l_shipinstruct (13) | StringValue | 8B | 480 KB |
+| l_shipmode (14) | StringValue | 8B | 480 KB |
+| l_comment (15) | StringValue | 8B | 480 KB |
+| **列数据合计** | | | **~5.2 MB** |
 | string_buffer | | | **~2.5 MB** |
-| **总计** | | | **~10 MB** |
+| **总计** | | | **~7.7 MB** |
 
-Projection pushdown 后 Q1 只访问 7 列（4,5,6,7,8,9,10），实际触及的内存约 **~3.6 MB**。
+Projection pushdown 后 Q1 只访问 7 列（4,5,6,7,8,9,10），实际触及的内存约 **~3.0 MB**。
 
 ---
 
@@ -199,20 +200,43 @@ dbgen 输出 `|` 分隔的文本文件：
 
 ### 6.3 Loading 流程
 
+加载分为两个阶段：**accumulate**（逐行追加到 typed vector）和 **finalize**（定型为只读 Column）。
+
 ```
 loadTable("lineitem.tbl"):
+    // === Phase 1: Accumulate ===
+    // 每列用 typed vector 累积，string_buffer 用 vector<char> 累积
+    vector<int32_t> col0_buf;      // l_orderkey
+    vector<int64_t> col4_buf;      // l_quantity (DECIMAL)
+    vector<StringValue> col8_buf;  // l_returnflag (VARCHAR)
+    vector<char> string_buf;       // 所有字符串的字符数据
+    ...
+
     1. 读取文件，逐行解析
     2. 对每行：
        a. split by '|'
-       b. 对每个字段，根据 ColumnDef.type 解析：
-          - INTEGER:  atoi → int32_t
-          - DECIMAL:  parseDecimal("21168.23", scale=2) → int64_t(2116823)
-          - DATE:     parseDate("1996-03-13") → daysSinceEpoch(1996,3,13) → int32_t
-          - VARCHAR:  将字符串追加到 string_buffer，记录 (ptr, len)
-       c. 将解析后的值追加到对应 Column.data
-    3. 记录 row_count
-    4. 构建 Catalog entry
+       b. 对每个字段，根据 ColumnDef.type 解析并 push_back 到对应 vector：
+          - INTEGER:  col_buf.push_back(atoi(field))
+          - DECIMAL:  col_buf.push_back(parseDecimal(field, scale))
+          - DATE:     col_buf.push_back(daysSinceEpoch(parseDate(field)))
+          - VARCHAR:  uint32_t off = string_buf.size()
+                      string_buf.insert(end, field.begin(), field.end())
+                      col_buf.push_back(StringValue{off, field.size()})
+
+    // === Phase 2: Finalize ===
+    3. 对每列：
+       table.columns[i].data = col_buf.data()
+       table.columns[i].elem_size = sizeof(T)
+       // 将 vector 的所有权转移给 Table（move 语义），之后不再修改
+    4. table.string_buffer = std::move(string_buf)
+    5. table.row_count = col0_buf.size()
+    6. 构建 Catalog entry
 ```
+
+关键点：
+- Phase 1 期间 vector 可能多次扩容，但 StringValue 中存的是 **offset** 而非指针，所以 string_buf 扩容不会导致悬空引用
+- Phase 2 的 finalize 后所有数据定型，Column.data 指针不再变化
+- JIT 代码只在 finalize 后访问 Column.data，不存在并发修改问题
 
 ### 6.4 DECIMAL 解析
 
@@ -248,6 +272,7 @@ struct RuntimeContext {
     // Table scan 需要的信息
     void** column_ptrs;      // 数组：column_ptrs[col_idx] = Column.data
     uint64_t row_count;
+    const char* string_base;  // Table.string_buffer.data()（VARCHAR offset 的基地址）
 
     // Hash aggregation
     void* hash_table;        // HashTable 对象指针
@@ -305,28 +330,36 @@ mov  rax, [r12 + r9*8]     ; 一条指令完成地址计算 + 加载
 
 ## 8. VARCHAR 访问细节
 
-VARCHAR 列在 Column.data 中存储的是 `StringValue` 数组（16B per element）。字符数据在 `Table.string_buffer` 中。
+VARCHAR 列在 Column.data 中存储的是 `StringValue` 数组（8B per element）。字符数据在 `Table.string_buffer` 中，通过 offset 引用。
 
 ```
 Column.data (l_returnflag):
-  row 0: StringValue { ptr=&buf[0],    len=1 }   → "N"
-  row 1: StringValue { ptr=&buf[1],    len=1 }   → "N"
-  row 2: StringValue { ptr=&buf[2],    len=1 }   → "A"
+  row 0: StringValue { offset=0, len=1 }   → "N"
+  row 1: StringValue { offset=1, len=1 }   → "N"
+  row 2: StringValue { offset=2, len=1 }   → "A"
   ...
 
 Table.string_buffer:
   [N][N][A][F][N][R][A]...
+   ^0 ^1 ^2 ^3 ^4 ^5 ^6
 ```
 
-对 Q1 的 group-by keys（`l_returnflag`, `l_linestatus`，都是 VARCHAR(1)），hash 和比较只需访问 `StringValue.ptr` 指向的 1 个字节。
+对 Q1 的 group-by keys（`l_returnflag`, `l_linestatus`，都是 VARCHAR(1)），hash 和比较只需访问 1 个字节。
 
 codegen 中访问 VARCHAR 的模式：
 
 ```
-// 加载 StringValue (16 bytes)
-%sv_ptr = getelementptr StringValue %col_base, i64 %i
-%str_ptr = load ptr %sv_ptr                      // StringValue.ptr
-%str_len = load i32 (sv_ptr + 8)                 // StringValue.len
+// 从 RuntimeContext 获取 string_buffer 基地址
+%string_base = load ptr (ctx + string_base_offset)  // RuntimeContext.string_base
+
+// 加载 StringValue (8 bytes)
+%sv_ptr = getelementptr StringValue %col_base, i64 %i   // col_base + i * 8
+%str_off = load i32 %sv_ptr                              // StringValue.offset
+%str_len = load i32 (%sv_ptr + 4)                        // StringValue.len
+
+// 计算字符数据的实际地址
+%str_off_64 = zext i64 %str_off
+%str_ptr = getelementptr i8 %string_base, i64 %str_off_64  // string_base + offset
 
 // 对 VARCHAR(1)，直接加载第一个字节用于 hash/compare
 %first_byte = load i8 %str_ptr
@@ -340,7 +373,7 @@ codegen 中访问 VARCHAR 的模式：
 
 | 完整系统特性 | MVP 处理 | 影响 |
 |------------|---------|------|
-| 磁盘存储 / buffer pool | 纯内存，启动时全量加载 | SF=0.01 ~10MB，无需磁盘 |
+| 磁盘存储 / buffer pool | 纯内存，启动时全量加载 | SF=0.01 ~8MB，无需磁盘 |
 | 压缩（dictionary, RLE, ...）| 无压缩 | 内存占用略大，但避免解压开销 |
 | Chunking / morsel | 单个连续数组 per column | 无法并行 scan，MVP 单线程 |
 | NULL bitmap | 不存储 | Q1 的 lineitem 无 NULL |
