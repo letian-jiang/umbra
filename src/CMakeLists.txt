@@ -5,6 +5,11 @@ add_library(umbra_lib STATIC
     storage/table.cpp
     storage/tbl_loader.cpp
     catalog/catalog.cpp
+    ir/instruction.cpp
+    ir/function.cpp
+    ir/program.cpp
+    ir/builder.cpp
+    ir/printer.cpp
 )
 
 target_include_directories(umbra_lib PUBLIC
