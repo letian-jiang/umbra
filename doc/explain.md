@@ -258,3 +258,5 @@ formatAsm(codeBuffer) → string     // asmjit Logger 或手动反汇编
 | EXPLAIN 输出到 JSON | 只支持文本 | |
 | Cost 信息在 plan 中标注 | 无 cost model，不标注 | |
 | per-operator row count | PROFILE 只报告 pipeline 级别 | |
+| EXPLAIN IR 打印完整 IR | MVP 只标注 IR 在 pipeline 执行期间生成 | IR 打印需要 codegen 重构暴露中间 IR |
+| EXPLAIN ASM 反汇编 | MVP 未实现 ASM 级别 | 需要 asmjit Logger 集成 |
