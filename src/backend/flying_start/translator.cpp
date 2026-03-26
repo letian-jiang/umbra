@@ -120,6 +120,67 @@ void* FlyingStartCompiler::compile(ir::Program& program, ir::FunctionId func) {
     return funcPtr;
 }
 
+void* FlyingStartCompiler::compileWithLog(ir::Program& program, ir::FunctionId func,
+                                          std::string& asmOutput) {
+    currentProgram_ = &program;
+
+    // Pass 0: Live span analysis.
+    lsa_.analyze(program, func);
+
+    // Reset state.
+    regAlloc_ = RegisterAllocator();
+    blockLabels_.clear();
+
+    code_ = new asmjit::CodeHolder();
+    code_->init(runtime_.environment());
+
+    // Attach a StringLogger to capture assembly output.
+    asmjit::StringLogger logger;
+    code_->set_logger(&logger);
+
+    as_ = new x86::Assembler(code_);
+
+    for (uint32_t blockOff : lsa_.rpoOrder()) {
+        blockLabels_[blockOff] = as_->new_label();
+    }
+    epilogueLabel_ = as_->new_label();
+
+    const auto& meta = program.functionMeta(func);
+    numParams_ = meta.numParams;
+
+    // Pre-allocate stack slots for ALL IR values.
+    uint32_t slotCount = 0;
+    for (uint32_t blockOff : lsa_.rpoOrder()) {
+        auto insts = collectBlockInsts(program, blockOff);
+        for (uint32_t instOff : insts) {
+            auto offset = static_cast<int32_t>(-(static_cast<int32_t>(slotCount) + 1) * 8);
+            ValueLocation loc;
+            loc.kind = LocationKind::STACK;
+            loc.stackOffset = offset;
+            ir::InstructionView iv(program.instBuffer().data(), instOff);
+            loc.type = iv.type();
+            regAlloc_.setLocation(instOff, loc);
+            ++slotCount;
+        }
+    }
+
+    // Translate function.
+    translateFunction(program, func);
+
+    void* funcPtr = nullptr;
+    runtime_.add(&funcPtr, code_);
+
+    // Capture the assembly text.
+    asmOutput.append(logger.data(), logger.data_size());
+
+    delete as_;
+    as_ = nullptr;
+    delete code_;
+    code_ = nullptr;
+
+    return funcPtr;
+}
+
 uint64_t FlyingStartCompiler::execute(void* funcPtr, std::span<const uint64_t> args) {
     switch (args.size()) {
         case 0: {

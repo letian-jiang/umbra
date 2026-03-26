@@ -7,8 +7,12 @@
 
 #include "codegen/operators/hash_aggregate.h"
 #include "codegen/operators/operator_translator.h"
+#include "codegen/operators/projection.h"
+#include "codegen/operators/result_writer.h"
+#include "codegen/operators/sort.h"
 #include "codegen/structures/hash_table.h"
 #include "execution/result_collector.h"
+#include "ir/program.h"
 #include "optimizer/optimizer.h"
 #include "storage/runtime_context.h"
 #include "storage/table.h"
@@ -26,6 +30,13 @@ struct PipelineProfile {
     double codegenMs{0.0};  // Tidy Tuples IR generation.
     double compileMs{0.0};  // IR finalization + JIT compilation (Flying Start).
     double executeMs{0.0};  // Pipeline function execution.
+};
+
+/// Result of codegen for one pipeline.
+struct CodegenResult {
+    ir::Program program;
+    ir::FunctionId funcId{};
+    std::string name;
 };
 
 /// PipelineExecutor — compiles and executes query pipelines.
@@ -53,6 +64,16 @@ class PipelineExecutor {
     /// @param table The table to scan.
     /// @param collector Result collector for output rows.
     void execute(const optimizer::OptimizeResult& result, Table& table, ResultCollector& collector);
+
+    /// Generate IR for all pipelines (codegen only, no execution).
+    /// Works for any plan shape the optimizer can produce.
+    std::vector<CodegenResult> codegenAllPipelines(const optimizer::OptimizeResult& result);
+
+    /// Generate IR text for all pipelines (codegen only, no execution).
+    std::string generateIR(const optimizer::OptimizeResult& result);
+
+    /// Generate x86-64 assembly text for all pipelines (codegen + compile, no execution).
+    std::string generateASM(const optimizer::OptimizeResult& result);
 
     /// Execute a single pipeline (for testing).
     /// @param pipelineIndex Which pipeline to execute (0 = build, 1 = scan).
@@ -86,6 +107,17 @@ class PipelineExecutor {
     /// Find a specific physical operator by kind in the plan tree.
     static const optimizer::PhysicalOperator* findOperator(const optimizer::PhysicalOperator* root,
                                                            optimizer::PhysicalNodeKind kind);
+
+    /// Build a chain: [Sort →] [Proj →] source, rooted at ResultWriter.
+    /// Sets child pointers and returns {resultWriter, bottomParent, all owned translators}.
+    /// The caller plugs the source (scan or agg-scan) into bottomParent.
+    struct OutputChain {
+        std::unique_ptr<codegen::ResultWriterTranslator> resultWriter;
+        std::unique_ptr<codegen::SortTranslator> sortTranslator;
+        std::unique_ptr<codegen::ProjectionTranslator> projTranslator;
+        codegen::OperatorTranslator* bottom;  // Where to plug the source.
+    };
+    static OutputChain buildOutputChain(const optimizer::OptimizeResult& result, uint32_t numCols);
 };
 
 }  // namespace umbra::execution

@@ -216,9 +216,27 @@ std::string runExplain(ExplainLevel level, const std::string& sql, const Catalog
         return out.str();
     }
 
-    // === IR (requires codegen — we note it's available via pipeline execution) ===
-    if (showIr) {
-        out << "IR: (generated during pipeline execution)\n";
+    // === IR: generate IR via codegen (no execution) ===
+    if (showIr && level == ExplainLevel::IR) {
+        execution::PipelineExecutor executor(backend);
+        out << "IR:\n";
+        out << executor.generateIR(optResult);
+        out << "\n";
+        return out.str();
+    }
+
+    // === ASM: generate x86-64 assembly via Flying Start compilation ===
+    if (level == ExplainLevel::ASM) {
+        execution::PipelineExecutor executor(execution::Backend::FLYING_START);
+        out << "ASM (x86-64, Flying Start):\n";
+        out << executor.generateASM(optResult);
+        out << "\n";
+        return out.str();
+    }
+
+    // For ALL level, show IR placeholder (codegen happens at execution time).
+    if (showIr && level != ExplainLevel::IR) {
+        out << "IR: (use EXPLAIN IR to see generated IR)\n";
         out << "\n";
     }
 

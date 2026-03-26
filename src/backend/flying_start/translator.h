@@ -37,6 +37,10 @@ class FlyingStartCompiler {
     /// For pipeline functions: void (*)(RuntimeContext*)
     void* compile(ir::Program& program, ir::FunctionId func);
 
+    /// Compile a function and capture the x86-64 assembly as text.
+    /// Returns the function pointer. Assembly text is appended to asmOutput.
+    void* compileWithLog(ir::Program& program, ir::FunctionId func, std::string& asmOutput);
+
     /// Execute a compiled function with arguments.
     static uint64_t execute(void* funcPtr, std::span<const uint64_t> args);
 
