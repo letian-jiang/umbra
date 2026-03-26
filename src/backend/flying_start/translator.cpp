@@ -258,38 +258,40 @@ void FlyingStartCompiler::emitComparison(ir::IROp lhsOp, ir::IROp rhsOp) {
     as_->cmp(lhsReg, rhsReg);
 }
 
-void FlyingStartCompiler::freeIfLastUse(ir::IROp op, uint32_t seqNum) {
-    if (!lsa_.isLastUse(op, seqNum)) {
-        return;
-    }
-    // Only free values whose entire live span is within the current block.
-    // Cross-block values (used in a different block from def) may be referenced
-    // across loop iterations and must preserve their slots.
-    if (lsa_.blockOf(op) != currentBlockOff_) {
-        return;
-    }
-    // The last use is at the current instruction in the current block,
-    // and the value was defined in the same block. Safe to recycle.
-    regAlloc_.removeLocation(op);
+void FlyingStartCompiler::freeIfLastUse(ir::IROp /*op*/, uint32_t /*seqNum*/) {
+    // Stack space reuse is performed in the pre-allocation pass
+    // (translateFunction), not during code emission.
 }
 
 // ── Translation ──────────────────────────────────────────────────────────────
 
 void FlyingStartCompiler::translateFunction(ir::Program& program, ir::FunctionId /*func*/) {
-    // Pre-allocate stack slots for all value-producing instructions.
-    // PHIs must be pre-allocated before any predecessor writes via resolvePhis.
-    // Other value-producers are pre-allocated so their slots exist when referenced
-    // cross-block. Terminators, STORE, and NOP don't produce values.
-    for (uint32_t blockOff : lsa_.rpoOrder()) {
-        auto insts = collectBlockInsts(program, blockOff);
-        for (uint32_t instOff : insts) {
-            ir::InstructionView inst(program.instBuffer().data(), instOff);
-            auto opcode = inst.opcode();
-            if (ir::isTerminator(opcode) || opcode == ir::Opcode::STORE ||
-                opcode == ir::Opcode::NOP) {
-                continue;
+    // Pre-allocate stack slots with integrated reuse: traverse all instructions
+    // in RPO order, freeing same-block values at their last use so that later
+    // instructions reuse the freed slots. This ensures every value has a slot
+    // before code emission while reducing the stack frame high-water mark.
+    {
+        uint32_t preSeq = 0;
+        for (uint32_t blockOff : lsa_.rpoOrder()) {
+            auto insts = collectBlockInsts(program, blockOff);
+            for (uint32_t instOff : insts) {
+                ir::InstructionView inst(program.instBuffer().data(), instOff);
+                auto opcode = inst.opcode();
+
+                // Free same-block value operands at their last use.
+                ir::forEachValueArg(inst, [&](ir::IROp op) {
+                    if (lsa_.isLastUse(op, preSeq) && lsa_.blockOf(op) == blockOff) {
+                        regAlloc_.removeLocation(op);
+                    }
+                });
+
+                // Allocate slot for value-producing instructions.
+                if (!ir::isTerminator(opcode) && opcode != ir::Opcode::STORE &&
+                    opcode != ir::Opcode::NOP) {
+                    assignResultLocation(instOff, inst.type());
+                }
+                ++preSeq;
             }
-            assignResultLocation(instOff, inst.type());
         }
     }
 
@@ -1062,98 +1064,27 @@ void FlyingStartCompiler::translateBSwap(ir::Program& /*program*/, const ir::Ins
 // ── Stack space reuse: free operands at last use ─────────────────────────────
 
 void FlyingStartCompiler::freeLastUseOperands(const ir::InstructionView& inst, uint32_t instOff) {
-    using ir::Opcode;
-
-    switch (inst.opcode()) {
-        // No value operands.
-        case Opcode::BR:
-        case Opcode::RET_VOID:
-        case Opcode::CONST:
-        case Opcode::NOP:
-        case Opcode::SWITCH:
-        case Opcode::NUM_OPCODES:
-            return;
-
-        // arg(0) is parameter index, not a value.
-        case Opcode::FUNARG:
-            return;
-
-        case Opcode::RET:
-            freeIfLastUse(inst.arg(0), currentSeq_);
-            return;
-
-        // Deferred comparison operands are freed when COND_BR consumes them.
-        case Opcode::COND_BR: {
-            ir::IROp condOp = inst.arg(0);
-            const auto* condLoc = regAlloc_.getLocation(condOp);
-            if (condLoc != nullptr && condLoc->kind == LocationKind::DEFERRED) {
-                ir::InstructionView cmpInst(currentProgram_->instBuffer().data(),
-                                            condLoc->deferredOp);
-                uint32_t cmpSeq = lsa_.seqNum(condLoc->deferredOp);
-                freeIfLastUse(cmpInst.arg(0), cmpSeq);
-                freeIfLastUse(cmpInst.arg(1), cmpSeq);
-            }
-            freeIfLastUse(condOp, currentSeq_);
-            return;
+    // Special case: COND_BR consuming a deferred comparison — free the cmp's operands.
+    if (inst.opcode() == ir::Opcode::COND_BR) {
+        ir::IROp condOp = inst.arg(0);
+        const auto* condLoc = regAlloc_.getLocation(condOp);
+        if (condLoc != nullptr && condLoc->kind == LocationKind::DEFERRED) {
+            ir::InstructionView cmpInst(currentProgram_->instBuffer().data(), condLoc->deferredOp);
+            uint32_t cmpSeq = lsa_.seqNum(condLoc->deferredOp);
+            ir::forEachValueArg(cmpInst, [&](ir::IROp op) { freeIfLastUse(op, cmpSeq); });
         }
-
-        // arg(0), arg(1) are values; arg(2), arg(3) are block offsets.
-        case Opcode::CHECKED_ADD:
-        case Opcode::CHECKED_SUB:
-        case Opcode::CHECKED_MUL:
-            freeIfLastUse(inst.arg(0), currentSeq_);
-            freeIfLastUse(inst.arg(1), currentSeq_);
-            return;
-
-        // arg(0) is callee index; remaining args are values.
-        case Opcode::CALL0:
-            return;
-        case Opcode::CALL1:
-            freeIfLastUse(inst.arg(1), currentSeq_);
-            return;
-        case Opcode::CALL2:
-            freeIfLastUse(inst.arg(1), currentSeq_);
-            freeIfLastUse(inst.arg(2), currentSeq_);
-            return;
-        case Opcode::CALL3:
-            freeIfLastUse(inst.arg(1), currentSeq_);
-            freeIfLastUse(inst.arg(2), currentSeq_);
-            freeIfLastUse(inst.arg(3), currentSeq_);
-            return;
-        case Opcode::CALL4:
-            for (uint8_t i = 1; i <= 4; ++i)
-                freeIfLastUse(inst.arg(i), currentSeq_);
-            return;
-        case Opcode::CALL5:
-            for (uint8_t i = 1; i <= 5; ++i)
-                freeIfLastUse(inst.arg(i), currentSeq_);
-            return;
-        case Opcode::CALL6:
-            for (uint8_t i = 1; i <= 6; ++i)
-                freeIfLastUse(inst.arg(i), currentSeq_);
-            return;
-
-        // PHIs handled in translateBlock, not here.
-        case Opcode::PHI2:
-        case Opcode::PHI3:
-        case Opcode::PHI4:
-        case Opcode::PHI5:
-        case Opcode::PHI6:
-            return;
-
-        default: {
-            // For deferred instructions (fused cmp), skip — operands freed by COND_BR.
-            const auto* loc = regAlloc_.getLocation(instOff);
-            if (loc != nullptr && loc->kind == LocationKind::DEFERRED) {
-                return;
-            }
-            // All arguments are value operands.
-            for (uint8_t i = 0; i < inst.numArgs(); ++i) {
-                freeIfLastUse(inst.arg(i), currentSeq_);
-            }
-            return;
-        }
+        freeIfLastUse(condOp, currentSeq_);
+        return;
     }
+
+    // Deferred instructions (fused cmp): operands freed later by COND_BR above.
+    const auto* loc = regAlloc_.getLocation(instOff);
+    if (loc != nullptr && loc->kind == LocationKind::DEFERRED) {
+        return;
+    }
+
+    // Generic dispatch via forEachValueArg (handles all opcode-specific arg layouts).
+    ir::forEachValueArg(inst, [&](ir::IROp op) { freeIfLastUse(op, currentSeq_); });
 }
 
 // ── PHI resolution ───────────────────────────────────────────────────────────

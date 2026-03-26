@@ -124,4 +124,62 @@ inline void patchArg(std::vector<uint8_t>& buffer, uint32_t instOffset, uint8_t 
     std::memcpy(buffer.data() + pos, &newValue, sizeof(uint32_t));
 }
 
+/// Iterate over value operands of an instruction, skipping non-value args
+/// (block offsets in BR/COND_BR/CHECKED_*, callee ID in CALL*, param index in FUNARG).
+/// For PHIs, iterates over incoming values only (not block args).
+template <typename Fn>
+void forEachValueArg(const InstructionView& inst, Fn&& fn) {
+    auto opcode = inst.opcode();
+    if (isPhi(opcode)) {
+        auto count = phiIncomingCount(opcode);
+        for (uint8_t i = 0; i < count; ++i) {
+            fn(inst.arg(static_cast<uint8_t>(i * 2 + 1)));
+        }
+        return;
+    }
+    switch (opcode) {
+        case Opcode::CONST:
+        case Opcode::NOP:
+        case Opcode::RET_VOID:
+        case Opcode::SWITCH:
+        case Opcode::NUM_OPCODES:
+            return;
+        case Opcode::FUNARG:
+            return;  // arg(0) is parameter index
+        case Opcode::BR:
+            return;  // arg(0) is block offset
+        case Opcode::RET:
+            fn(inst.arg(0));
+            return;
+        case Opcode::COND_BR:
+            fn(inst.arg(0));  // condition; arg(1),arg(2) are block offsets
+            return;
+        case Opcode::CHECKED_ADD:
+        case Opcode::CHECKED_SUB:
+        case Opcode::CHECKED_MUL:
+            fn(inst.arg(0));
+            fn(inst.arg(1));  // arg(2),arg(3) are block offsets
+            return;
+        case Opcode::CALL0:
+            return;  // arg(0) is callee ID
+        case Opcode::CALL1:
+        case Opcode::CALL2:
+        case Opcode::CALL3:
+        case Opcode::CALL4:
+        case Opcode::CALL5:
+        case Opcode::CALL6: {
+            auto count = callParamCount(opcode);
+            for (uint8_t i = 1; i <= count; ++i) {
+                fn(inst.arg(i));
+            }
+            return;
+        }
+        default:
+            for (uint8_t i = 0; i < inst.numArgs(); ++i) {
+                fn(inst.arg(i));
+            }
+            return;
+    }
+}
+
 }  // namespace umbra::ir

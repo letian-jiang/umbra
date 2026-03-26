@@ -130,36 +130,18 @@ void LiveSpanAnalysis::analyze(const ir::Program& program, ir::FunctionId func) 
             span.lastUsePoint = seq;  // Default: last use = def (unused value)
             spans_[instOff] = span;
 
-            // Update last-use points for all operands.
+            // Update last-use points for value operands only.
+            // Uses forEachValueArg to skip non-value args (block offsets,
+            // callee IDs, parameter indices) that could collide with IROp.
             ir::InstructionView inst(program.instBuffer().data(), instOff);
-            auto opcode = inst.opcode();
-
-            if (ir::isPhi(opcode)) {
-                // PHI: each incoming value's last-use extends to the end of
-                // its predecessor block. We handle this by extending the
-                // last-use to at least the current seq.
-                auto count = ir::phiIncomingCount(opcode);
-                for (uint8_t i = 0; i < count; ++i) {
-                    uint32_t incomingValue = inst.arg(static_cast<uint8_t>(i * 2 + 1));
-                    auto it = spans_.find(incomingValue);
-                    if (it != spans_.end()) {
-                        if (seq > it->second.lastUsePoint) {
-                            it->second.lastUsePoint = seq;
-                        }
+            ir::forEachValueArg(inst, [&](uint32_t argOp) {
+                auto it = spans_.find(argOp);
+                if (it != spans_.end()) {
+                    if (seq > it->second.lastUsePoint) {
+                        it->second.lastUsePoint = seq;
                     }
                 }
-            } else {
-                auto numArgs = inst.numArgs();
-                for (uint8_t i = 0; i < numArgs; ++i) {
-                    uint32_t argOff = inst.arg(i);
-                    auto it = spans_.find(argOff);
-                    if (it != spans_.end()) {
-                        if (seq > it->second.lastUsePoint) {
-                            it->second.lastUsePoint = seq;
-                        }
-                    }
-                }
-            }
+            });
 
             ++seq;
         }
