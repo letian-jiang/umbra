@@ -164,6 +164,35 @@ void LiveSpanAnalysis::analyze(const ir::Program& program, ir::FunctionId func) 
             ++seq;
         }
     }
+
+    // Extend PHI result live spans to cover all predecessor terminators.
+    // This prevents PHI slots from being freed while the loop still needs them.
+    // (Design doc §3.3: PHI live span extends to predecessor ends.)
+    for (uint32_t blockOff : rpoOrder_) {
+        auto insts = collectBlockInsts(program, blockOff);
+        for (uint32_t instOff : insts) {
+            ir::InstructionView inst(program.instBuffer().data(), instOff);
+            if (!ir::isPhi(inst.opcode())) {
+                break;  // PHIs are at the beginning of blocks.
+            }
+            auto count = ir::phiIncomingCount(inst.opcode());
+            for (uint8_t i = 0; i < count; ++i) {
+                uint32_t predBlock = inst.arg(static_cast<uint8_t>(i * 2));
+                auto predInsts = collectBlockInsts(program, predBlock);
+                if (predInsts.empty()) {
+                    continue;
+                }
+                auto termIt = seqNums_.find(predInsts.back());
+                if (termIt == seqNums_.end()) {
+                    continue;
+                }
+                auto phiIt = spans_.find(instOff);
+                if (phiIt != spans_.end() && termIt->second > phiIt->second.lastUsePoint) {
+                    phiIt->second.lastUsePoint = termIt->second;
+                }
+            }
+        }
+    }
 }
 
 const LiveSpan* LiveSpanAnalysis::getSpan(ir::IROp op) const {

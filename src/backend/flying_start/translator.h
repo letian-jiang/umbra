@@ -134,6 +134,9 @@ class FlyingStartCompiler {
     /// Free operand locations if this is their last use.
     void freeIfLastUse(ir::IROp op, uint32_t seqNum);
 
+    /// Free all operand locations that reached their last use at this instruction.
+    void freeLastUseOperands(const ir::InstructionView& inst, uint32_t instOff);
+
     // ── Prologue / Epilogue ──────────────────────────────────────────────
 
     void emitPrologue();

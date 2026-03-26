@@ -87,26 +87,8 @@ void* FlyingStartCompiler::compile(ir::Program& program, ir::FunctionId func) {
     const auto& meta = program.functionMeta(func);
     numParams_ = meta.numParams;
 
-    // Pre-allocate stack slots for ALL IR values (simple, correct approach).
-    // Each IR value gets a unique slot at [rbp - (slot_index+1)*8].
-    // We map instruction offset -> slot index.
-    // First pass: assign slots.
-    uint32_t slotCount = 0;
-    for (uint32_t blockOff : lsa_.rpoOrder()) {
-        auto insts = collectBlockInsts(program, blockOff);
-        for (uint32_t instOff : insts) {
-            auto offset = static_cast<int32_t>(-(static_cast<int32_t>(slotCount) + 1) * 8);
-            ValueLocation loc;
-            loc.kind = LocationKind::STACK;
-            loc.stackOffset = offset;
-            ir::InstructionView iv(program.instBuffer().data(), instOff);
-            loc.type = iv.type();
-            regAlloc_.setLocation(instOff, loc);
-            ++slotCount;
-        }
-    }
-
-    // Translate function.
+    // Translate function. Stack slots are pre-allocated for value-producing
+    // instructions and freed via live span analysis for same-block reuse.
     translateFunction(program, func);
 
     void* funcPtr = nullptr;
@@ -148,21 +130,7 @@ void* FlyingStartCompiler::compileWithLog(ir::Program& program, ir::FunctionId f
     const auto& meta = program.functionMeta(func);
     numParams_ = meta.numParams;
 
-    // Pre-allocate stack slots for ALL IR values.
-    uint32_t slotCount = 0;
-    for (uint32_t blockOff : lsa_.rpoOrder()) {
-        auto insts = collectBlockInsts(program, blockOff);
-        for (uint32_t instOff : insts) {
-            auto offset = static_cast<int32_t>(-(static_cast<int32_t>(slotCount) + 1) * 8);
-            ValueLocation loc;
-            loc.kind = LocationKind::STACK;
-            loc.stackOffset = offset;
-            ir::InstructionView iv(program.instBuffer().data(), instOff);
-            loc.type = iv.type();
-            regAlloc_.setLocation(instOff, loc);
-            ++slotCount;
-        }
-    }
+    // Stack slots are allocated on-demand during translation.
 
     // Translate function.
     translateFunction(program, func);
@@ -263,14 +231,9 @@ asmjit::x86::Gp FlyingStartCompiler::loadValueForModify(ir::IROp op, const asmji
 
 void FlyingStartCompiler::storeResult(uint32_t instOff, const asmjit::x86::Gp& reg,
                                       ir::TypeId type) {
-    const auto* loc = regAlloc_.getLocation(instOff);
-    if (loc == nullptr) {
-        return;
-    }
-    (void)type;
-
-    if (loc->kind == LocationKind::STACK) {
-        as_->mov(x86::qword_ptr(x86::rbp, loc->stackOffset), reg);
+    auto loc = assignResultLocation(instOff, type);
+    if (loc.kind == LocationKind::STACK) {
+        as_->mov(x86::qword_ptr(x86::rbp, loc.stackOffset), reg);
     }
 }
 
@@ -295,14 +258,41 @@ void FlyingStartCompiler::emitComparison(ir::IROp lhsOp, ir::IROp rhsOp) {
     as_->cmp(lhsReg, rhsReg);
 }
 
-void FlyingStartCompiler::freeIfLastUse(ir::IROp /*op*/, uint32_t /*seqNum*/) {
-    // In the simple stack-based model, we don't free slots early.
-    // Stack space reuse is applied through the live span analysis later.
+void FlyingStartCompiler::freeIfLastUse(ir::IROp op, uint32_t seqNum) {
+    if (!lsa_.isLastUse(op, seqNum)) {
+        return;
+    }
+    // Only free values whose entire live span is within the current block.
+    // Cross-block values (used in a different block from def) may be referenced
+    // across loop iterations and must preserve their slots.
+    if (lsa_.blockOf(op) != currentBlockOff_) {
+        return;
+    }
+    // The last use is at the current instruction in the current block,
+    // and the value was defined in the same block. Safe to recycle.
+    regAlloc_.removeLocation(op);
 }
 
 // ── Translation ──────────────────────────────────────────────────────────────
 
 void FlyingStartCompiler::translateFunction(ir::Program& program, ir::FunctionId /*func*/) {
+    // Pre-allocate stack slots for all value-producing instructions.
+    // PHIs must be pre-allocated before any predecessor writes via resolvePhis.
+    // Other value-producers are pre-allocated so their slots exist when referenced
+    // cross-block. Terminators, STORE, and NOP don't produce values.
+    for (uint32_t blockOff : lsa_.rpoOrder()) {
+        auto insts = collectBlockInsts(program, blockOff);
+        for (uint32_t instOff : insts) {
+            ir::InstructionView inst(program.instBuffer().data(), instOff);
+            auto opcode = inst.opcode();
+            if (ir::isTerminator(opcode) || opcode == ir::Opcode::STORE ||
+                opcode == ir::Opcode::NOP) {
+                continue;
+            }
+            assignResultLocation(instOff, inst.type());
+        }
+    }
+
     emitPrologue();
 
     currentSeq_ = 0;
@@ -323,7 +313,8 @@ void FlyingStartCompiler::translateBlock(ir::Program& program, uint32_t blockOff
         ir::InstructionView inst(program.instBuffer().data(), instOff);
 
         if (ir::isPhi(inst.opcode())) {
-            // PHIs are resolved when branching to this block.
+            // Allocate a stack slot for the PHI result (on-demand).
+            assignResultLocation(instOff, inst.type());
             ++currentSeq_;
             continue;
         }
@@ -334,6 +325,7 @@ void FlyingStartCompiler::translateBlock(ir::Program& program, uint32_t blockOff
         }
 
         translateInstruction(program, inst, instOff);
+        freeLastUseOperands(inst, instOff);
         ++currentSeq_;
     }
 }
@@ -1067,6 +1059,103 @@ void FlyingStartCompiler::translateBSwap(ir::Program& /*program*/, const ir::Ins
     storeResult(instOff, x86::rax, inst.type());
 }
 
+// ── Stack space reuse: free operands at last use ─────────────────────────────
+
+void FlyingStartCompiler::freeLastUseOperands(const ir::InstructionView& inst, uint32_t instOff) {
+    using ir::Opcode;
+
+    switch (inst.opcode()) {
+        // No value operands.
+        case Opcode::BR:
+        case Opcode::RET_VOID:
+        case Opcode::CONST:
+        case Opcode::NOP:
+        case Opcode::SWITCH:
+        case Opcode::NUM_OPCODES:
+            return;
+
+        // arg(0) is parameter index, not a value.
+        case Opcode::FUNARG:
+            return;
+
+        case Opcode::RET:
+            freeIfLastUse(inst.arg(0), currentSeq_);
+            return;
+
+        // Deferred comparison operands are freed when COND_BR consumes them.
+        case Opcode::COND_BR: {
+            ir::IROp condOp = inst.arg(0);
+            const auto* condLoc = regAlloc_.getLocation(condOp);
+            if (condLoc != nullptr && condLoc->kind == LocationKind::DEFERRED) {
+                ir::InstructionView cmpInst(currentProgram_->instBuffer().data(),
+                                            condLoc->deferredOp);
+                uint32_t cmpSeq = lsa_.seqNum(condLoc->deferredOp);
+                freeIfLastUse(cmpInst.arg(0), cmpSeq);
+                freeIfLastUse(cmpInst.arg(1), cmpSeq);
+            }
+            freeIfLastUse(condOp, currentSeq_);
+            return;
+        }
+
+        // arg(0), arg(1) are values; arg(2), arg(3) are block offsets.
+        case Opcode::CHECKED_ADD:
+        case Opcode::CHECKED_SUB:
+        case Opcode::CHECKED_MUL:
+            freeIfLastUse(inst.arg(0), currentSeq_);
+            freeIfLastUse(inst.arg(1), currentSeq_);
+            return;
+
+        // arg(0) is callee index; remaining args are values.
+        case Opcode::CALL0:
+            return;
+        case Opcode::CALL1:
+            freeIfLastUse(inst.arg(1), currentSeq_);
+            return;
+        case Opcode::CALL2:
+            freeIfLastUse(inst.arg(1), currentSeq_);
+            freeIfLastUse(inst.arg(2), currentSeq_);
+            return;
+        case Opcode::CALL3:
+            freeIfLastUse(inst.arg(1), currentSeq_);
+            freeIfLastUse(inst.arg(2), currentSeq_);
+            freeIfLastUse(inst.arg(3), currentSeq_);
+            return;
+        case Opcode::CALL4:
+            for (uint8_t i = 1; i <= 4; ++i)
+                freeIfLastUse(inst.arg(i), currentSeq_);
+            return;
+        case Opcode::CALL5:
+            for (uint8_t i = 1; i <= 5; ++i)
+                freeIfLastUse(inst.arg(i), currentSeq_);
+            return;
+        case Opcode::CALL6:
+            for (uint8_t i = 1; i <= 6; ++i)
+                freeIfLastUse(inst.arg(i), currentSeq_);
+            return;
+
+        // PHIs handled in translateBlock, not here.
+        case Opcode::PHI2:
+        case Opcode::PHI3:
+        case Opcode::PHI4:
+        case Opcode::PHI5:
+        case Opcode::PHI6:
+            return;
+
+        default: {
+            // For deferred instructions (fused cmp), skip — operands freed by COND_BR.
+            const auto* loc = regAlloc_.getLocation(instOff);
+            if (loc != nullptr && loc->kind == LocationKind::DEFERRED) {
+                return;
+            }
+            // All arguments are value operands.
+            for (uint8_t i = 0; i < inst.numArgs(); ++i) {
+                freeIfLastUse(inst.arg(i), currentSeq_);
+            }
+            return;
+        }
+    }
+}
+
 // ── PHI resolution ───────────────────────────────────────────────────────────
 
 void FlyingStartCompiler::resolvePhis(ir::Program& program, uint32_t targetBlockOff) {
@@ -1120,9 +1209,12 @@ void FlyingStartCompiler::resolvePhis(ir::Program& program, uint32_t targetBlock
         int32_t tempOff = tempBase + static_cast<int32_t>(i) * 8;
         as_->mov(x86::rax, x86::qword_ptr(x86::rbp, tempOff));
 
-        const auto* phiLoc = regAlloc_.getLocation(moves[i].first);
-        if (phiLoc != nullptr && phiLoc->kind == LocationKind::STACK) {
-            as_->mov(x86::qword_ptr(x86::rbp, phiLoc->stackOffset), x86::rax);
+        // Use assignResultLocation for robustness (PHIs are pre-allocated,
+        // but this is a safety net).
+        ir::InstructionView phiInst(instBuf.data(), moves[i].first);
+        auto phiLoc = assignResultLocation(moves[i].first, phiInst.type());
+        if (phiLoc.kind == LocationKind::STACK) {
+            as_->mov(x86::qword_ptr(x86::rbp, phiLoc.stackOffset), x86::rax);
         }
     }
 }

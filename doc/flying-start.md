@@ -486,7 +486,7 @@ pipeline(&ctx);
 |---------|---------|------|
 | 4 项 on-the-fly 优化全部实现 | **分阶段实现** | 见下 |
 | Phase 1: 无优化直接翻译 | 所有值在 stack，最基本翻译 | 功能正确但慢 |
-| Phase 2: + Stack Space Reuse | 需要 live span pass | 减少 stack 帧 |
+| Phase 2: + Stack Space Reuse | **已实现** — 同 block 内值的 slot 在 last use 后归还 | 减少 stack 帧 |
 | Phase 3: + Register Allocation | 最大性能提升项（-32%） | 接近目标性能 |
 | Phase 4: + Lazy Address + Fuse CmpBr | 锦上添花 | 完成全部优化 |
 | Checked arithmetic 融合翻译 | 先用普通 add + jo 分开 emit | 功能正确，性能差异小 |
