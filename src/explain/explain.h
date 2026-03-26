@@ -31,15 +31,6 @@ bool parseExplainLevel(const std::string& str, ExplainLevel& level);
 /// Convert an EXPLAIN level to string.
 std::string explainLevelToString(ExplainLevel level);
 
-/// Timing breakdown for EXPLAIN PROFILE.
-struct ProfileTimings {
-    double planMs{0.0};
-    double codegenMs{0.0};
-    double compileMs{0.0};
-    double executeMs{0.0};
-    double totalMs{0.0};
-};
-
 /// Check if a SQL string starts with EXPLAIN, and extract the level and remaining SQL.
 /// Returns true if the input is an EXPLAIN statement.
 bool parseExplainPrefix(const std::string& sql, ExplainLevel& level, std::string& remainingSql);
@@ -50,8 +41,9 @@ bool parseExplainPrefix(const std::string& sql, ExplainLevel& level, std::string
 /// @param sql The SQL string (without EXPLAIN prefix).
 /// @param catalog The catalog for name resolution.
 /// @param table The table for execution (only needed for PROFILE).
+/// @param backend Execution backend for PROFILE (default: interpreter).
 /// @return Formatted EXPLAIN output string.
 std::string runExplain(ExplainLevel level, const std::string& sql, const Catalog& catalog,
-                       Table& table);
+                       Table& table, execution::Backend backend = execution::Backend::INTERPRETER);
 
 }  // namespace umbra::explain

@@ -134,7 +134,7 @@ bool parseExplainPrefix(const std::string& sql, ExplainLevel& level, std::string
 }
 
 std::string runExplain(ExplainLevel level, const std::string& sql, const Catalog& catalog,
-                       Table& table) {
+                       Table& table, execution::Backend backend) {
     std::ostringstream out;
 
     bool showAst = (level == ExplainLevel::AST || level == ExplainLevel::ALL ||
@@ -222,20 +222,44 @@ std::string runExplain(ExplainLevel level, const std::string& sql, const Catalog
         out << "\n";
     }
 
-    // For PROFILE, execute with timing.
+    // For PROFILE, execute with per-pipeline timing breakdown.
     if (level == ExplainLevel::PROFILE) {
         double planMs = elapsedMs(planStart, planEnd);
-        auto execStart = now();
+
         execution::ResultCollector collector;
-        execution::PipelineExecutor executor;
+        execution::PipelineExecutor executor(backend);
+        executor.enableProfiling();
         executor.execute(optResult, table, collector);
-        double execMs = elapsedMs(execStart, now());
+
+        const auto& profiles = executor.profiles();
         double totalMs = elapsedMs(totalStart, now());
+
+        // Sum per-pipeline phases.
+        double totalCodegen = 0.0;
+        double totalCompile = 0.0;
+        double totalExecute = 0.0;
+        for (const auto& p : profiles) {
+            totalCodegen += p.codegenMs;
+            totalCompile += p.compileMs;
+            totalExecute += p.executeMs;
+        }
+
         out << std::fixed;
         out.precision(2);
-        out << "Profile:\n  plan:    " << planMs << " ms\n  execute: " << execMs
-            << " ms\n  total:   " << totalMs << " ms\n\nResult: " << collector.numRows()
-            << " rows\n";
+
+        std::string backendName =
+            (backend == execution::Backend::INTERPRETER) ? "interpreter" : "flying-start";
+        out << "Profile (backend: " << backendName << "):\n";
+        out << "                  plan    codegen  compile  execute  total\n";
+        for (size_t i = 0; i < profiles.size(); ++i) {
+            const auto& p = profiles[i];
+            double pTotal = p.codegenMs + p.compileMs + p.executeMs;
+            out << "Pipeline " << i << ":       -       " << p.codegenMs << "ms   " << p.compileMs
+                << "ms   " << p.executeMs << "ms   " << pTotal << "ms\n";
+        }
+        out << "Total:           " << planMs << "ms   " << totalCodegen << "ms   " << totalCompile
+            << "ms   " << totalExecute << "ms   " << totalMs << "ms\n";
+        out << "\nResult: " << collector.numRows() << " rows\n";
     }
 
     return out.str();

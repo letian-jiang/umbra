@@ -79,7 +79,7 @@ readStatement():
 | `.tables` | 列出所有已加载的表 |
 | `.schema <table>` | 打印表的列定义 |
 | `.timer on/off` | 开启/关闭每条 SQL 的执行计时 |
-| `.backend interp/jit` | 切换执行后端（Interpreter / Flying Start）|
+| `.backend [interpreter\|flying-start]` | 显示或切换执行后端 |
 | `.load <file>` | 加载一个 .tbl 文件 |
 | `.explain <level>` | 设置默认 EXPLAIN level（之后每条 SQL 自动 EXPLAIN）|
 | `.explain off` | 关闭自动 EXPLAIN |
@@ -93,7 +93,7 @@ umbra> .help
 .tables            List loaded tables
 .schema <table>    Show table schema
 .timer on|off      Toggle query timing
-.backend interp|jit  Switch execution backend
+.backend [name]    Show or set backend (interpreter|flying-start)
 .load <file>       Load a .tbl file
 .explain <level>   Auto-explain: AST|LOGICAL|PHYSICAL|PIPELINE|IR|ASM|PROFILE|ALL|off
 ```
@@ -124,11 +124,14 @@ Table: lineitem (60175 rows)
 ### 3.3 .backend
 
 ```
-umbra> .backend interp
-Switched to interpreter backend.
+umbra> .backend
+Current backend: interpreter
 
-umbra> .backend jit
-Switched to Flying Start backend.
+umbra> .backend flying-start
+Backend set to: flying-start
+
+umbra> .backend interpreter
+Backend set to: interpreter
 ```
 
 ---
@@ -354,4 +357,4 @@ count(*)
 | linenoise 行编辑 | 使用简单 stdin 读取代替 | 无快捷键、历史搜索、Tab 补全 |
 | 历史持久化 (~/.umbra_history) | 不实现 | 避免依赖 linenoise |
 | Tab 自动补全 | 不实现 | 避免依赖 linenoise |
-| `.backend` / `.load` / `.explain` dot命令 | 不实现 | MVP 只需 .help/.quit/.tables/.schema/.timer |
+| `.load` / `.explain` dot命令 | 不实现 | MVP 只需 .help/.quit/.tables/.schema/.timer/.backend |

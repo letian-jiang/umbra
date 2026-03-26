@@ -132,6 +132,7 @@ bool Shell::executeDotCommand(const std::string& cmd, std::ostream& out, std::os
         out << ".tables            List loaded tables\n";
         out << ".schema <table>    Show table schema\n";
         out << ".timer on|off      Toggle query timing\n";
+        out << ".backend [name]    Show or set backend (interpreter|flying-start)\n";
         return true;
     }
 
@@ -168,6 +169,25 @@ bool Shell::executeDotCommand(const std::string& cmd, std::ostream& out, std::os
         return true;
     }
 
+    if (lower.starts_with(".backend")) {
+        std::string arg = trim(lower.substr(8));
+        if (arg.empty()) {
+            out << "Current backend: "
+                << (config_.backend == execution::Backend::INTERPRETER ? "interpreter"
+                                                                       : "flying-start")
+                << "\n";
+        } else if (arg == "interpreter") {
+            config_.backend = execution::Backend::INTERPRETER;
+            out << "Backend set to: interpreter\n";
+        } else if (arg == "flying-start") {
+            config_.backend = execution::Backend::FLYING_START;
+            out << "Backend set to: flying-start\n";
+        } else {
+            err << "Usage: .backend [interpreter|flying-start]\n";
+        }
+        return true;
+    }
+
     if (lower.starts_with(".timer")) {
         std::string arg = trim(lower.substr(6));
         if (arg == "on") {
@@ -192,7 +212,8 @@ void Shell::executeQuery(const std::string& sql, std::ostream& out, std::ostream
         explain::ExplainLevel level{};
         std::string remainingSql;
         if (explain::parseExplainPrefix(sql, level, remainingSql)) {
-            std::string result = explain::runExplain(level, remainingSql, catalog_, table_);
+            std::string result =
+                explain::runExplain(level, remainingSql, catalog_, table_, config_.backend);
             out << result;
             return;
         }
@@ -205,7 +226,7 @@ void Shell::executeQuery(const std::string& sql, std::ostream& out, std::ostream
         optimizer::Optimizer opt;
         auto optResult = opt.optimize(bindResult);
         execution::ResultCollector collector;
-        execution::PipelineExecutor executor;
+        execution::PipelineExecutor executor(config_.backend);
         executor.execute(optResult, table_, collector);
         double elapsedMs = std::chrono::duration<double, std::milli>(
                                std::chrono::high_resolution_clock::now() - start)
