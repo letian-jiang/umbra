@@ -331,6 +331,77 @@ TEST_CASE("JIT Opt: NULL propagation pattern", "[jit_opt]") {
     REQUIRE(static_cast<int64_t>(jitRun(program, 0, {10, 0, 20, 1})) == 0);
 }
 
+TEST_CASE("JIT Opt: IR constant folding removes trivial logical and cast ops", "[jit_opt]") {
+    IRBuilder builder;
+    builder.createFunction("fold_consts", TypeId::UINT64, {});
+
+    auto falseConst = builder.emitConst(TypeId::BOOL, 0);
+    auto trueConst = builder.emitConst(TypeId::BOOL, 1);
+    auto negOne = builder.emitConst(TypeId::INT32, static_cast<uint32_t>(-1));
+
+    auto foldedOr = builder.emitLOr(falseConst, falseConst);
+    auto foldedAnd = builder.emitLAnd(trueConst, falseConst);
+    auto foldedSExt = builder.emitSExt(TypeId::INT64, negOne);
+    auto foldedZExt = builder.emitZExt(TypeId::UINT64, negOne);
+    auto foldedBitcast = builder.emitBitcast(TypeId::UINT64, foldedZExt);
+
+    REQUIRE(foldedOr == falseConst);
+    REQUIRE(foldedAnd == falseConst);
+    REQUIRE(foldedSExt != negOne);
+    REQUIRE(foldedZExt != negOne);
+    REQUIRE(foldedBitcast == foldedZExt);
+
+    auto result = builder.emitAdd(TypeId::UINT64, foldedZExt, builder.emitConst(TypeId::UINT64, 0));
+    builder.emitRet(TypeId::UINT64, result);
+
+    auto program = builder.finalize();
+    REQUIRE(jitRun(program, 0, {}) == 0xFFFFFFFFULL);
+}
+
+TEST_CASE("JIT Opt: signed constant division avoids idiv", "[jit_opt]") {
+    IRBuilder builder;
+    builder.createFunction("div_magic", TypeId::INT64, {TypeId::INT64});
+
+    auto value = builder.emitFunArg(TypeId::INT64, 0);
+    auto divisor = builder.emitConst(TypeId::INT64, 100);
+    auto quotient = builder.emitDiv(TypeId::INT64, value, divisor);
+    auto remainder = builder.emitMod(TypeId::INT64, value, divisor);
+    auto sum = builder.emitAdd(TypeId::INT64, quotient, remainder);
+    builder.emitRet(TypeId::INT64, sum);
+
+    auto program = builder.finalize();
+
+    REQUIRE(static_cast<int64_t>(jitRun(program, 0, {12345})) == 168);
+    REQUIRE(static_cast<int64_t>(jitRun(program, 0, {static_cast<uint64_t>(-12345LL)})) == -168);
+
+    FlyingStartCompiler jit;
+    std::string asmOutput;
+    jit.compileWithLog(program, 0, asmOutput);
+    REQUIRE(asmOutput.find("idiv") == std::string::npos);
+}
+
+TEST_CASE("JIT Opt: deferred GEP folds address arithmetic into memory operands", "[jit_opt]") {
+    IRBuilder builder;
+    builder.createFunction("gep_folded", TypeId::INT64, {TypeId::PTR, TypeId::INT64});
+
+    auto basePtr = builder.emitFunArg(TypeId::PTR, 0);
+    auto idx = builder.emitFunArg(TypeId::INT64, 1);
+    auto elemPtr = builder.emitGEP(basePtr, TypeId::INT64, idx);
+    auto val = builder.emitLoad(TypeId::INT64, elemPtr);
+    builder.emitRet(TypeId::INT64, val);
+
+    auto program = builder.finalize();
+
+    std::vector<int64_t> arr = {11, 22, 33};
+    auto arrPtr = reinterpret_cast<uint64_t>(arr.data());  // NOLINT
+    REQUIRE(static_cast<int64_t>(jitRun(program, 0, {arrPtr, 2})) == 33);
+
+    FlyingStartCompiler jit;
+    std::string asmOutput;
+    jit.compileWithLog(program, 0, asmOutput);
+    REQUIRE(asmOutput.find("imul") == std::string::npos);
+}
+
 // ── Optimization function unit tests ─────────────────────────────────────────
 
 TEST_CASE("JIT Opt: shouldAllocateRegister heuristic", "[jit_opt]") {

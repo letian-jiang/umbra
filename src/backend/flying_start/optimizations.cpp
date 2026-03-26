@@ -26,14 +26,10 @@ bool shouldAllocateRegister(const LiveSpanAnalysis& lsa, ir::IROp op, uint32_t c
         return false;
     }
 
-    // Heuristic: allocate register if the value only lives in the current block.
-    // This keeps register pressure low.
     uint32_t defBlock = lsa.blockOf(op);
     if (defBlock == currentBlockOff) {
         return true;
     }
-
-    // For cross-block values, allocate if we have plenty of registers available.
     return regAlloc.availableRegisterCount() > 3;
 }
 
@@ -110,8 +106,47 @@ bool canDeferGep(const ir::Program& program, const LiveSpanAnalysis& lsa, ir::IR
         return false;
     }
 
-    // Only defer if the GEP result is used shortly after definition.
-    return (span->lastUsePoint - span->defPoint) <= 2;
+    if ((span->lastUsePoint - span->defPoint) > 2) {
+        return false;
+    }
+
+    const auto& blockBuf = program.blockBuffer();
+    const auto& instBuf = program.instBuffer();
+    uint32_t pos = lsa.blockOf(gepOp);
+    bool seenGep = false;
+
+    while (pos < static_cast<uint32_t>(blockBuf.size())) {
+        uint32_t instOff = blockBuf[pos];
+        auto opcode = static_cast<ir::Opcode>(instBuf[instOff]);
+        ++pos;
+
+        if (instOff == gepOp) {
+            seenGep = true;
+            continue;
+        }
+        if (!seenGep) {
+            if (ir::isTerminator(opcode)) {
+                break;
+            }
+            continue;
+        }
+
+        ir::InstructionView user(program.instBuffer().data(), instOff);
+        for (uint8_t i = 0; i < user.numArgs(); ++i) {
+            if (user.arg(i) != gepOp) {
+                continue;
+            }
+            if (opcode != ir::Opcode::LOAD && opcode != ir::Opcode::STORE) {
+                return false;
+            }
+        }
+
+        if (ir::isTerminator(opcode)) {
+            break;
+        }
+    }
+
+    return true;
 }
 
 // ── Condition code mapping ────────���────────────────────────────���─────────────

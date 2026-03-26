@@ -31,6 +31,9 @@ struct ValueLocation {
     uint64_t constValue = 0;             ///< Valid when kind == CONST.
     uint8_t conditionCode = 0;           ///< Valid when kind == FLAGS (x86 condition code).
     ir::IROp deferredOp = 0;             ///< Valid when kind == DEFERRED.
+    ir::IROp gepBase = ir::INVALID_OP;   ///< Deferred GEP base pointer.
+    ir::IROp gepIndex = ir::INVALID_OP;  ///< Deferred GEP index operand.
+    ir::TypeId gepElemType = ir::TypeId::VOID;  ///< Deferred GEP element type.
     ir::TypeId type = ir::TypeId::VOID;  ///< The IR type of this value.
 };
 
