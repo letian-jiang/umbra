@@ -14,6 +14,10 @@ TEST_CASE("Type system basics", "[types]") {
         REQUIRE(decType.precision == 15);
         REQUIRE(decType.scale == 2);
 
+        auto charType = SQLType::fixedChar(10);
+        REQUIRE(charType.id == SQLTypeId::CHAR);
+        REQUIRE(charType.maxLen == 10);
+
         auto varcharType = SQLType::varchar(100);
         REQUIRE(varcharType.id == SQLTypeId::VARCHAR);
         REQUIRE(varcharType.maxLen == 100);
@@ -24,6 +28,7 @@ TEST_CASE("Type system basics", "[types]") {
         REQUIRE(typeSize(SQLTypeId::BIGINT) == 8);
         REQUIRE(typeSize(SQLTypeId::DATE) == 4);
         REQUIRE(typeSize(SQLTypeId::DECIMAL) == 8);
+        REQUIRE(typeSize(SQLTypeId::CHAR) == 1);
         REQUIRE(typeSize(SQLTypeId::VARCHAR) == sizeof(StringValue));
         REQUIRE(typeSize(SQLTypeId::BOOLEAN) == 1);
     }

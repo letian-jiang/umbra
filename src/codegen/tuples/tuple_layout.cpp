@@ -37,7 +37,7 @@ TupleLayout::TupleLayout(const std::vector<SQLType>& types) {
 
     fields_.reserve(types.size());
     for (const auto& sqlType : types) {
-        auto irType = sqlTypeToIR(sqlType.id);
+        auto irType = sqlTypeToIR(sqlType);
         auto alignment = alignmentOf(irType);
         auto size = ir::typeSize(irType);
 
@@ -147,8 +147,11 @@ UInt64 TupleLayout::hash(CodegenContext& ctx, const std::vector<SQLValue>& keys)
     auto h2 = ctx.constUInt64(HASH_SEED_2);
 
     for (const auto& key : keys) {
+        // CHAR(n>1) content-based hashing not yet implemented.
+        assert(!(key.type().id == SQLTypeId::CHAR && key.type().maxLen > 1) &&
+               "CHAR(n>1) hashing not implemented");
         // Convert key value to UInt64 for CRC32.
-        auto irType = sqlTypeToIR(key.type().id);
+        auto irType = sqlTypeToIR(key.type());
         ir::IROp asU64{};
         if (irType == ir::TypeId::INT8 || irType == ir::TypeId::BOOL ||
             irType == ir::TypeId::INT32) {

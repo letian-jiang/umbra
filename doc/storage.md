@@ -45,6 +45,8 @@ Storage 层管理内存中的表数据和元数据。MVP 采用最简单的纯�
 | BIGINT | `int64_t` | 8B | 原样存储 | |
 | DECIMAL(p,s) | `int64_t` | 8B | Scaled integer: value × 10^s | s 记录在 ColumnDef.type 中 |
 | DATE | `int32_t` | 4B | 距 epoch 的天数 | epoch = 2000-01-01 |
+| CHAR(1) | `int8_t` | 1B | ASCII 字节值，连续定长存储 | SQLTypeId::CHAR, IR=INT8 |
+| CHAR(n), n>1 | `int8_t[n]` | nB | 定长 n 字节，空格右填充，连续存储 | SQLTypeId::CHAR, IR=PTR |
 | VARCHAR(n) | `StringValue` | 8B | `{uint32_t offset, uint32_t len}` | offset into string buffer |
 | BOOLEAN | `int8_t` | 1B | 0 或 1 | 仅内部使用 |
 
@@ -75,6 +77,29 @@ struct StringValue {
 **定长 8 字节**——每行的 StringValue 占固定大小，可以用 `base + row_idx * 8` 直接寻址。`offset` 是相对于 `Table.string_buffer.data()` 的偏移量，而非裸指针。
 
 字符数据存储在 Table 级别的 string buffer 中。加载期间 string_buffer 可能因 `push_back` 扩容导致基地址变化，用 offset 而非指针就不存在悬空引用问题。JIT 访问时，先从 RuntimeContext 获取 `string_buffer.data()` 基地址，再加上 offset 得到实际指针。
+
+### 2.4 CHAR
+
+CHAR(n) 采用定长连续内存存储，与 VARCHAR 的关键区别是**无 StringValue 间接、无 stringBuffer**。
+
+所有 CHAR(n) 列在 Column 内部存为 `vector<int8_t>` 扁平缓冲区，`elemSize = n`。每行占 n 字节连续排列：
+
+```
+CHAR(1) 列 (l_returnflag, 60K rows):
+  Column.data → [ 78 | 78 | 65 | 70 | ... ]   // 'N'=78, 'A'=65, 'F'=70
+  elemSize = 1, Row i = base + i × 1
+  total = 60175 × 1 = ~60 KB
+
+CHAR(10) 列 (l_shipmode, 60K rows):
+  Column.data → [ 'T','R','U','C','K',' ',' ',' ',' ',' ' | 'M','A','I','L',' ',... | ... ]
+  elemSize = 10, Row i = base + i × 10
+  total = 60175 × 10 = ~600 KB
+```
+
+- **CHAR(1)**：直接存 ASCII 字节值，可直接整数比较和哈希（zero-extend 到 uint64 后 CRC32）
+- **CHAR(n>1)**：不足 n 字节时空格右填充（SQL 标准 CHAR 语义）
+- **SQLTypeId**：新增 `CHAR`，`SQLType::fixedChar(n)` 工厂方法，`maxLen = n`
+- **IR 映射**：CHAR(1) → `ir::TypeId::INT8`，CHAR(n>1) → `ir::TypeId::PTR`（指向列内 n 字节定长区域），不新增 IR TypeId
 
 ---
 
@@ -159,19 +184,19 @@ struct Table {
 | l_extendedprice (5) | int64 | 8B | 480 KB |
 | l_discount (6) | int64 | 8B | 480 KB |
 | l_tax (7) | int64 | 8B | 480 KB |
-| l_returnflag (8) | StringValue | 8B | 480 KB |
-| l_linestatus (9) | StringValue | 8B | 480 KB |
+| l_returnflag (8) | int8 (CHAR(1)) | 1B | 60 KB |
+| l_linestatus (9) | int8 (CHAR(1)) | 1B | 60 KB |
 | l_shipdate (10) | int32 | 4B | 240 KB |
 | l_commitdate (11) | int32 | 4B | 240 KB |
 | l_receiptdate (12) | int32 | 4B | 240 KB |
-| l_shipinstruct (13) | StringValue | 8B | 480 KB |
-| l_shipmode (14) | StringValue | 8B | 480 KB |
+| l_shipinstruct (13) | int8[25] (CHAR(25)) | 25B | 1500 KB |
+| l_shipmode (14) | int8[10] (CHAR(10)) | 10B | 600 KB |
 | l_comment (15) | StringValue | 8B | 480 KB |
-| **列数据合计** | | | **~5.2 MB** |
-| string_buffer | | | **~2.5 MB** |
-| **总计** | | | **~7.7 MB** |
+| **列数据合计** | | | **~5.1 MB** |
+| string_buffer | | | **~1.7 MB** |
+| **总计** | | | **~6.8 MB** |
 
-Projection pushdown 后 Q1 只访问 7 列（4,5,6,7,8,9,10），实际触及的内存约 **~3.0 MB**。
+Projection pushdown 后 Q1 只访问 7 列（4,5,6,7,8,9,10），实际触及的内存约 **~2.2 MB**（CHAR(1) 列仅 60KB/列 vs 之前 StringValue 的 480KB/列）。
 
 ---
 
@@ -395,7 +420,7 @@ codegen 中访问 VARCHAR 的模式：
 %first_byte = load i8 %str_ptr
 ```
 
-> 对 Q1 来说，`l_returnflag` 和 `l_linestatus` 都是 VARCHAR(1)，可以优化为直接按 `int8` hash 和比较，跳过 StringValue 的间接访问。这是一个 codegen 层面的优化，storage 层不需要特殊处理。
+> 对 Q1 来说，`l_returnflag` 和 `l_linestatus` 是 CHAR(1)，直接按 `int8` hash 和比较，无 StringValue 间接访问（见 §2.4）。
 
 ---
 
@@ -411,4 +436,4 @@ codegen 中访问 VARCHAR 的模式：
 | MVCC / 事务 | 无 | |
 | 多表 | 只加载 lineitem | Q1 单表 |
 | 统计信息（histogram, min/max）| 不收集 | optimizer 不需要 |
-| String 优化（short string inline）| 统一 ptr+len 结构 | 简单但 VARCHAR(1) 有间接访问开销 |
+| String 优化（short string inline）| CHAR(n) 定长内联，VARCHAR 用 ptr+len | CHAR(1) 无间接访问开销 |

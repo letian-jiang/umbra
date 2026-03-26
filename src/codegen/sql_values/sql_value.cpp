@@ -7,8 +7,8 @@ namespace umbra::codegen {
 
 // ── Utility ─────────────────────────────────────────────────────────────────
 
-ir::TypeId sqlTypeToIR(SQLTypeId typeId) {
-    switch (typeId) {
+ir::TypeId sqlTypeToIR(const SQLType& type) {
+    switch (type.id) {
         case SQLTypeId::BOOLEAN:
             return ir::TypeId::BOOL;
         case SQLTypeId::INTEGER:
@@ -17,6 +17,8 @@ ir::TypeId sqlTypeToIR(SQLTypeId typeId) {
         case SQLTypeId::BIGINT:
         case SQLTypeId::DECIMAL:
             return ir::TypeId::INT64;
+        case SQLTypeId::CHAR:
+            return type.maxLen == 1 ? ir::TypeId::INT8 : ir::TypeId::PTR;
         case SQLTypeId::VARCHAR:
             return ir::TypeId::PTR;
     }
@@ -41,14 +43,14 @@ SQLValue::SQLValue(CodegenContext& ctx, ir::IROp value, SQLType type)
     : value_(value), nullFlag_(ctx.constBool(false).op()), type_(type) {}
 
 SQLValue SQLValue::makeNull(CodegenContext& ctx, SQLType type) {
-    auto irType = sqlTypeToIR(type.id);
+    auto irType = sqlTypeToIR(type);
     auto zeroVal = ctx.builder().emitConst(irType, 0);
     auto nullFlag = ctx.constBool(true).op();
     return {zeroVal, nullFlag, type};
 }
 
 SQLValue SQLValue::makeConst(CodegenContext& ctx, int64_t value, SQLType type) {
-    auto irType = sqlTypeToIR(type.id);
+    auto irType = sqlTypeToIR(type);
     auto val = ctx.builder().emitConst(irType, static_cast<uint64_t>(value));
     auto notNull = ctx.constBool(false).op();
     return {val, notNull, type};
@@ -110,8 +112,8 @@ SQLValue SQLValue::castTo(CodegenContext& ctx, SQLType targetType) const {
     }
 
     ir::IROp newValue = value_;
-    auto srcIR = sqlTypeToIR(type_.id);
-    auto dstIR = sqlTypeToIR(targetType.id);
+    auto srcIR = sqlTypeToIR(type_);
+    auto dstIR = sqlTypeToIR(targetType);
 
     // INTEGER → BIGINT: sign extend
     if (type_.id == SQLTypeId::INTEGER && targetType.id == SQLTypeId::BIGINT) {
@@ -238,7 +240,7 @@ SQLValue SQLValue::evaluateBinary(CodegenContext& ctx, BinaryOp op, const SQLVal
     auto resultNull = ctx.builder().emitLOr(castLhs.nullFlag_, castRhs.nullFlag_);
 
     // 5. Emit arithmetic.
-    auto irType = sqlTypeToIR(resultType.id);
+    auto irType = sqlTypeToIR(resultType);
     auto resultValue = emitArithmeticOp(ctx, op, irType, castLhs.value_, castRhs.value_);
 
     // 6. DECIMAL rescaling for multiplication.
@@ -282,6 +284,12 @@ SQLValue SQLValue::evaluateCompare(CodegenContext& ctx, CmpOp op, const SQLValue
     // Determine common type for comparison.
     SQLType commonType = inferBinaryResultType(BinaryOp::ADD, lhs.type_, rhs.type_);
 
+    // CHAR(n>1) content-based comparison not yet implemented.
+    assert(!(lhs.type_.id == SQLTypeId::CHAR && lhs.type_.maxLen > 1) &&
+           "CHAR(n>1) comparison not implemented");
+    assert(!(rhs.type_.id == SQLTypeId::CHAR && rhs.type_.maxLen > 1) &&
+           "CHAR(n>1) comparison not implemented");
+
     // For DATE comparisons, use the date type directly.
     if (lhs.type_.id == SQLTypeId::DATE && rhs.type_.id == SQLTypeId::DATE) {
         commonType = SQLType::date();
@@ -302,7 +310,7 @@ SQLValue SQLValue::evaluateCompare(CodegenContext& ctx, CmpOp op, const SQLValue
     auto resultNull = ctx.builder().emitLOr(castLhs.nullFlag_, castRhs.nullFlag_);
 
     // Emit comparison.
-    auto irType = sqlTypeToIR(commonType.id);
+    auto irType = sqlTypeToIR(commonType);
     auto cmpResult = emitCompareOp(ctx, op, irType, castLhs.value_, castRhs.value_);
 
     return {cmpResult, resultNull, SQLType::boolean()};

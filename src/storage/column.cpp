@@ -2,9 +2,9 @@
 
 namespace umbra {
 
-Column Column::create(SQLTypeId typeId) {
+Column Column::create(SQLType type) {
     Column col;
-    switch (typeId) {
+    switch (type.id) {
         case SQLTypeId::INTEGER:
         case SQLTypeId::DATE:
             col.storage = std::vector<int32_t>{};
@@ -14,6 +14,10 @@ Column Column::create(SQLTypeId typeId) {
         case SQLTypeId::DECIMAL:
             col.storage = std::vector<int64_t>{};
             col.elemSize = sizeof(int64_t);
+            break;
+        case SQLTypeId::CHAR:
+            col.storage = std::vector<int8_t>{};
+            col.elemSize = type.maxLen;
             break;
         case SQLTypeId::VARCHAR:
             col.storage = std::vector<StringValue>{};

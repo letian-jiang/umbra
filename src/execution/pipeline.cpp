@@ -315,6 +315,16 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
             }
             ascending.push_back(item.ascending);
         }
+        // Verify no CHAR(n>1) sort columns — host-side sort compares raw int64_t
+        // which would be pointer values, not string content.
+        const auto& sch = collector.schema();
+        for (auto col : sortCols) {
+            if (sch[col].type.id == SQLTypeId::CHAR && sch[col].type.maxLen > 1) {
+                throw std::runtime_error("ORDER BY on CHAR(" +
+                                         std::to_string(sch[col].type.maxLen) +
+                                         ") not yet supported");
+            }
+        }
         collector.sort(sortCols, ascending);
     }
 

@@ -20,7 +20,7 @@ struct Column {
     uint32_t elemSize{0};
 
     // Create a column with the appropriate storage type for the given SQL type
-    static Column create(SQLTypeId typeId);
+    static Column create(SQLType type);
 
     // Get raw pointer to the underlying array data
     void* data();

@@ -46,7 +46,7 @@ void ResultWriterTranslator::consume(CompilationContext& ctx, const std::vector<
         auto elemPtr = bufPtr.gep(cg, writeIdx);
 
         // Cast value to Int64 for storage.
-        auto irType = sqlTypeToIR(tuple[c].type().id);
+        auto irType = sqlTypeToIR(tuple[c].type());
         ir::IROp valAsI64{};
         if (irType == ir::TypeId::INT8 || irType == ir::TypeId::BOOL ||
             irType == ir::TypeId::INT32) {

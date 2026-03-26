@@ -31,7 +31,7 @@ static Catalog makeBenchCatalog() {
         {"l_suppkey", SQLType::integer(), 2},       {"l_linenumber", SQLType::integer(), 3},
         {"l_quantity", SQLType::decimal(15, 2), 4}, {"l_extendedprice", SQLType::decimal(15, 2), 5},
         {"l_discount", SQLType::decimal(15, 2), 6}, {"l_tax", SQLType::decimal(15, 2), 7},
-        {"l_returnflag", SQLType::boolean(), 8},    {"l_linestatus", SQLType::boolean(), 9},
+        {"l_returnflag", SQLType::fixedChar(1), 8}, {"l_linestatus", SQLType::fixedChar(1), 9},
         {"l_shipdate", SQLType::date(), 10},
     };
     catalog.addTable(std::move(def));
@@ -47,7 +47,7 @@ static Table makeBenchTable(int numRows) {
 
     // Columns 0-3: placeholders.
     for (int c = 0; c < 4; ++c) {
-        Column col = Column::create(SQLTypeId::INTEGER);
+        Column col = Column::create(SQLType::integer());
         auto& v = std::get<std::vector<int32_t>>(col.storage);
         v.reserve(numRows);
         for (int i = 0; i < numRows; ++i) {
@@ -58,7 +58,7 @@ static Table makeBenchTable(int numRows) {
 
     // Column 4: l_quantity (varies 1.00 to 50.00).
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(col.storage);
         v.reserve(numRows);
         for (int i = 0; i < numRows; ++i) {
@@ -69,7 +69,7 @@ static Table makeBenchTable(int numRows) {
 
     // Column 5: l_extendedprice (varies 100.00 to 10000.00).
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(col.storage);
         v.reserve(numRows);
         for (int i = 0; i < numRows; ++i) {
@@ -80,7 +80,7 @@ static Table makeBenchTable(int numRows) {
 
     // Column 6: l_discount (0.00 to 0.10).
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(col.storage);
         v.reserve(numRows);
         for (int i = 0; i < numRows; ++i) {
@@ -91,7 +91,7 @@ static Table makeBenchTable(int numRows) {
 
     // Column 7: l_tax (0.00 to 0.08).
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(col.storage);
         v.reserve(numRows);
         for (int i = 0; i < numRows; ++i) {
@@ -102,7 +102,7 @@ static Table makeBenchTable(int numRows) {
 
     // Column 8: l_returnflag (A/N/R).
     {
-        Column col = Column::create(SQLTypeId::BOOLEAN);
+        Column col = Column::create(SQLType::fixedChar(1));
         auto& v = std::get<std::vector<int8_t>>(col.storage);
         v.reserve(numRows);
         constexpr int8_t FLAGS[] = {65, 78, 82};  // A, N, R
@@ -114,7 +114,7 @@ static Table makeBenchTable(int numRows) {
 
     // Column 9: l_linestatus (F/O).
     {
-        Column col = Column::create(SQLTypeId::BOOLEAN);
+        Column col = Column::create(SQLType::fixedChar(1));
         auto& v = std::get<std::vector<int8_t>>(col.storage);
         v.reserve(numRows);
         constexpr int8_t STATUSES[] = {70, 79};  // F, O
@@ -126,7 +126,7 @@ static Table makeBenchTable(int numRows) {
 
     // Column 10: l_shipdate (most dates pass the Q1 filter).
     {
-        Column col = Column::create(SQLTypeId::DATE);
+        Column col = Column::create(SQLType::date());
         auto& v = std::get<std::vector<int32_t>>(col.storage);
         v.reserve(numRows);
         for (int i = 0; i < numRows; ++i) {

@@ -179,6 +179,31 @@ BoundExpr* Binder::bindBinaryExpr(const parser::BinaryExpr* binExpr) {
     auto* left = bindExpr(binExpr->left);
     auto* right = bindExpr(binExpr->right);
 
+    // Convert string literal to CHAR when compared with a CHAR column.
+    auto convertStringToChar = [this](BoundExpr*& expr, const SQLType& targetType) {
+        if (targetType.id != SQLTypeId::CHAR || expr->kind != BoundExprKind::LITERAL ||
+            expr->resultType.id != SQLTypeId::VARCHAR) {
+            return;
+        }
+        auto* lit = static_cast<BoundLiteral*>(expr);
+        if (lit->strValue.size() > targetType.maxLen) {
+            throw BindError("string literal too long for CHAR(" + std::to_string(targetType.maxLen) +
+                            ")");
+        }
+        if (targetType.maxLen == 1) {
+            if (lit->strValue.empty()) {
+                throw BindError("empty string literal cannot be compared with CHAR(1)");
+            }
+            expr = allocExpr<BoundLiteral>(SQLType::fixedChar(1),
+                                           static_cast<int64_t>(lit->strValue[0]));
+        } else {
+            throw BindError("CHAR(" + std::to_string(targetType.maxLen) +
+                            ") comparison not yet supported");
+        }
+    };
+    convertStringToChar(right, left->resultType);
+    convertStringToChar(left, right->resultType);
+
     auto resolved = resolveTypes(binExpr->op, left, right);
     return allocExpr<BoundBinaryExpr>(binExpr->op, resolved.left, resolved.right,
                                       resolved.resultType);
@@ -371,6 +396,13 @@ SQLType Binder::findCommonType(SQLType left, SQLType right) {
                                     std::max(left.scale, right.scale));
         }
         return left;
+    }
+
+    // CHAR(1) and VARCHAR are compatible string types.
+    // CHAR(n>1) comparison is not yet implemented.
+    if ((left.id == SQLTypeId::CHAR && left.maxLen == 1 && right.id == SQLTypeId::VARCHAR) ||
+        (left.id == SQLTypeId::VARCHAR && right.id == SQLTypeId::CHAR && right.maxLen == 1)) {
+        return left.id == SQLTypeId::CHAR ? left : right;
     }
 
     // Promotion: INTEGER -> BIGINT -> DECIMAL

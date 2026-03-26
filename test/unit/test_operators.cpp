@@ -47,17 +47,17 @@ static Table makeTestTable() {
     table.name = "test_table";
 
     // Column 0: quantity (int32)
-    Column c0 = Column::create(SQLTypeId::INTEGER);
+    Column c0 = Column::create(SQLType::integer());
     auto& v0 = std::get<std::vector<int32_t>>(c0.storage);
     v0 = {10, 20, 30, 40, 50};
 
     // Column 1: price (int64)
-    Column c1 = Column::create(SQLTypeId::BIGINT);
+    Column c1 = Column::create(SQLType::bigint());
     auto& v1 = std::get<std::vector<int64_t>>(c1.storage);
     v1 = {100, 200, 300, 400, 500};
 
     // Column 2: flag (int8 for boolean)
-    Column c2 = Column::create(SQLTypeId::BOOLEAN);
+    Column c2 = Column::create(SQLType::boolean());
     auto& v2 = std::get<std::vector<int8_t>>(c2.storage);
     v2 = {1, 0, 1, 0, 1};
 

@@ -31,7 +31,7 @@ static Catalog makeQ1Catalog() {
         {"l_suppkey", SQLType::integer(), 2},       {"l_linenumber", SQLType::integer(), 3},
         {"l_quantity", SQLType::decimal(15, 2), 4}, {"l_extendedprice", SQLType::decimal(15, 2), 5},
         {"l_discount", SQLType::decimal(15, 2), 6}, {"l_tax", SQLType::decimal(15, 2), 7},
-        {"l_returnflag", SQLType::boolean(), 8},    {"l_linestatus", SQLType::boolean(), 9},
+        {"l_returnflag", SQLType::fixedChar(1), 8}, {"l_linestatus", SQLType::fixedChar(1), 9},
         {"l_shipdate", SQLType::date(), 10},
     };
     catalog.addTable(std::move(def));
@@ -58,7 +58,7 @@ static Table makeQ1TestTable() {
 
     // Columns 0-3: placeholders (INTEGER).
     for (int c = 0; c < 4; ++c) {
-        Column col = Column::create(SQLTypeId::INTEGER);
+        Column col = Column::create(SQLType::integer());
         auto& v = std::get<std::vector<int32_t>>(col.storage);
         v.resize(NUM_ROWS, 0);
         table.columns.push_back(std::move(col));
@@ -66,7 +66,7 @@ static Table makeQ1TestTable() {
 
     // Column 4: l_quantity (DECIMAL(15,2), scaled by 100).
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(col.storage);
         //                  10.00  20.00  30.00  15.00  25.00  40.00  12.00  50.00  18.00  22.00
         v = {1000, 2000, 3000, 1500, 2500, 4000, 1200, 5000, 1800, 2200};
@@ -75,7 +75,7 @@ static Table makeQ1TestTable() {
 
     // Column 5: l_extendedprice (DECIMAL(15,2), scaled by 100).
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(col.storage);
         //               100.00  200.00  300.00  150.00  250.00  400.00  120.00  500.00  180.00
         //               220.00
@@ -85,7 +85,7 @@ static Table makeQ1TestTable() {
 
     // Column 6: l_discount (DECIMAL(15,2), scaled by 100).
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(col.storage);
         //       0.05  0.10  0.00  0.05  0.08  0.00  0.02  0.03  0.07  0.06
         v = {5, 10, 0, 5, 8, 0, 2, 3, 7, 6};
@@ -94,25 +94,25 @@ static Table makeQ1TestTable() {
 
     // Column 7: l_tax (DECIMAL(15,2), scaled by 100).
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(col.storage);
         //       0.08  0.04  0.02  0.06  0.03  0.00  0.01  0.05  0.04  0.02
         v = {8, 4, 2, 6, 3, 0, 1, 5, 4, 2};
         table.columns.push_back(std::move(col));
     }
 
-    // Column 8: l_returnflag (BOOLEAN/INT8 — ASCII char code).
+    // Column 8: l_returnflag (CHAR(1) — ASCII char code).
     {
-        Column col = Column::create(SQLTypeId::BOOLEAN);
+        Column col = Column::create(SQLType::fixedChar(1));
         auto& v = std::get<std::vector<int8_t>>(col.storage);
         // 'A'=65, 'N'=78, 'R'=82
         v = {65, 65, 78, 78, 82, 65, 78, 82, 65, 78};
         table.columns.push_back(std::move(col));
     }
 
-    // Column 9: l_linestatus (BOOLEAN/INT8 — ASCII char code).
+    // Column 9: l_linestatus (CHAR(1) — ASCII char code).
     {
-        Column col = Column::create(SQLTypeId::BOOLEAN);
+        Column col = Column::create(SQLType::fixedChar(1));
         auto& v = std::get<std::vector<int8_t>>(col.storage);
         // 'F'=70, 'O'=79
         v = {70, 70, 79, 79, 70, 70, 79, 70, 70, 79};
@@ -123,7 +123,7 @@ static Table makeQ1TestTable() {
     // 1998-09-02 ~= -487 days from epoch.
     // Rows 0-7 have dates before the cutoff; rows 8-9 are after.
     {
-        Column col = Column::create(SQLTypeId::DATE);
+        Column col = Column::create(SQLType::date());
         auto& v = std::get<std::vector<int32_t>>(col.storage);
         // dates chosen to be well before 1998-09-02 (-487) for passing,
         // and well after for failing.
@@ -314,37 +314,37 @@ TEST_CASE("Q1 all rows pass when dates before cutoff", "[sql][q1]") {
     Table table;
     table.name = "lineitem";
     for (int c = 0; c < 4; ++c) {
-        Column col = Column::create(SQLTypeId::INTEGER);
+        Column col = Column::create(SQLType::integer());
         std::get<std::vector<int32_t>>(col.storage) = {0, 0};
         table.columns.push_back(std::move(col));
     }
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         std::get<std::vector<int64_t>>(col.storage) = {1000, 2000};
         table.columns.push_back(std::move(col));
     }
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         std::get<std::vector<int64_t>>(col.storage) = {10000, 20000};
         table.columns.push_back(std::move(col));
     }
     for (int c = 0; c < 2; ++c) {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         std::get<std::vector<int64_t>>(col.storage) = {0, 0};
         table.columns.push_back(std::move(col));
     }
     {
-        Column col = Column::create(SQLTypeId::BOOLEAN);
+        Column col = Column::create(SQLType::fixedChar(1));
         std::get<std::vector<int8_t>>(col.storage) = {65, 65};
         table.columns.push_back(std::move(col));
     }
     {
-        Column col = Column::create(SQLTypeId::BOOLEAN);
+        Column col = Column::create(SQLType::fixedChar(1));
         std::get<std::vector<int8_t>>(col.storage) = {70, 70};
         table.columns.push_back(std::move(col));
     }
     {
-        Column col = Column::create(SQLTypeId::DATE);
+        Column col = Column::create(SQLType::date());
         // Dates well before the cutoff.
         std::get<std::vector<int32_t>>(col.storage) = {-600, -700};
         table.columns.push_back(std::move(col));
