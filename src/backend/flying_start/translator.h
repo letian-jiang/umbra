@@ -131,6 +131,20 @@ class FlyingStartCompiler {
     /// Emit comparison instruction between two operands.
     void emitComparison(ir::IROp lhsOp, ir::IROp rhsOp);
 
+    /// Return true if the operand is a constant IR value.
+    [[nodiscard]] static bool isConstOp(const ir::Program& program, ir::IROp op);
+
+    /// Read the constant payload from a CONST instruction.
+    [[nodiscard]] static uint64_t getConstValue(const ir::Program& program, ir::IROp op);
+
+    struct SignedMagic {
+        int64_t magic;
+        uint8_t shift;
+    };
+
+    /// Compute signed-division magic for a positive constant divisor.
+    [[nodiscard]] static SignedMagic computeSignedMagic(int64_t divisor);
+
     /// Free operand locations if this is their last use.
     void freeIfLastUse(ir::IROp op, uint32_t seqNum);
 

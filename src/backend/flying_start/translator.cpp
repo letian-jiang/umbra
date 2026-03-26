@@ -55,6 +55,19 @@ extern "C" uint64_t jitCallHostFunction(const void* funcVoid, const uint64_t* ar
     return (*func)(args, static_cast<uint8_t>(count));
 }
 
+uint8_t gepScaleShift(ir::TypeId elemType) {
+    switch (ir::typeSize(elemType)) {
+        case 1:
+            return 0;
+        case 4:
+            return 2;
+        case 8:
+            return 3;
+        default:
+            return 0;
+    }
+}
+
 }  // namespace
 
 // ── Constructor / Destructor ─────────────────────────────────────────────────
@@ -256,6 +269,57 @@ void FlyingStartCompiler::emitComparison(ir::IROp lhsOp, ir::IROp rhsOp) {
     auto lhsReg = loadValueToReg(lhsOp, x86::rax);
     auto rhsReg = loadValueToReg(rhsOp, x86::rcx);
     as_->cmp(lhsReg, rhsReg);
+}
+
+bool FlyingStartCompiler::isConstOp(const ir::Program& program, ir::IROp op) {
+    return op < program.instBuffer().size() &&
+           static_cast<ir::Opcode>(program.instBuffer()[op]) == ir::Opcode::CONST;
+}
+
+uint64_t FlyingStartCompiler::getConstValue(const ir::Program& program, ir::IROp op) {
+    ir::InstructionView view(program.instBuffer().data(), op);
+    return view.constPayload();
+}
+
+FlyingStartCompiler::SignedMagic FlyingStartCompiler::computeSignedMagic(int64_t divisor) {
+    assert(divisor > 1);
+
+    const uint64_t ad = static_cast<uint64_t>(divisor);
+    const uint64_t two63 = uint64_t{1} << 63;
+    const uint64_t t = two63;
+    const uint64_t anc = t - 1 - (t % ad);
+
+    uint64_t p = 63;
+    uint64_t q1 = two63 / anc;
+    uint64_t r1 = two63 - q1 * anc;
+    uint64_t q2 = two63 / ad;
+    uint64_t r2 = two63 - q2 * ad;
+
+    uint64_t delta = 0;
+    do {
+        ++p;
+
+        q1 <<= 1;
+        r1 <<= 1;
+        if (r1 >= anc) {
+            ++q1;
+            r1 -= anc;
+        }
+
+        q2 <<= 1;
+        r2 <<= 1;
+        if (r2 >= ad) {
+            ++q2;
+            r2 -= ad;
+        }
+
+        delta = ad - r2;
+    } while (q1 < delta || (q1 == delta && r1 == 0));
+
+    return {
+        .magic = static_cast<int64_t>(q2 + 1),
+        .shift = static_cast<uint8_t>(p - 64),
+    };
 }
 
 void FlyingStartCompiler::freeIfLastUse(ir::IROp /*op*/, uint32_t /*seqNum*/) {
@@ -565,9 +629,38 @@ void FlyingStartCompiler::translateMul(ir::Program& /*program*/, const ir::Instr
     storeResult(instOff, x86::rax, inst.type());
 }
 
-void FlyingStartCompiler::translateDiv(ir::Program& /*program*/, const ir::InstructionView& inst,
+void FlyingStartCompiler::translateDiv(ir::Program& program, const ir::InstructionView& inst,
                                        uint32_t instOff) {
     loadValueToReg(inst.arg(0), x86::rax);
+
+    if ((inst.type() == ir::TypeId::INT32 || inst.type() == ir::TypeId::INT64) &&
+        isConstOp(program, inst.arg(1))) {
+        int64_t divisor = static_cast<int64_t>(getConstValue(program, inst.arg(1)));
+        if (divisor > 1) {
+            if (inst.type() == ir::TypeId::INT32) {
+                as_->movsxd(x86::rax, x86::eax);
+            }
+
+            const auto magic = computeSignedMagic(divisor);
+            as_->mov(x86::rsi, x86::rax);
+            as_->mov(x86::rcx, static_cast<uint64_t>(magic.magic));
+            as_->imul(x86::rcx);
+
+            if (magic.magic < 0) {
+                as_->add(x86::rdx, x86::rsi);
+            }
+            if (magic.shift != 0) {
+                as_->sar(x86::rdx, magic.shift);
+            }
+
+            as_->mov(x86::rax, x86::rdx);
+            as_->shr(x86::rax, 63);
+            as_->add(x86::rdx, x86::rax);
+            storeResult(instOff, x86::rdx, inst.type());
+            return;
+        }
+    }
+
     loadValueToReg(inst.arg(1), x86::rcx);
 
     auto nonZeroLabel = as_->new_label();
@@ -610,9 +703,43 @@ void FlyingStartCompiler::translateUDiv(ir::Program& /*program*/, const ir::Inst
     storeResult(instOff, x86::rax, inst.type());
 }
 
-void FlyingStartCompiler::translateMod(ir::Program& /*program*/, const ir::InstructionView& inst,
+void FlyingStartCompiler::translateMod(ir::Program& program, const ir::InstructionView& inst,
                                        uint32_t instOff) {
     loadValueToReg(inst.arg(0), x86::rax);
+
+    if ((inst.type() == ir::TypeId::INT32 || inst.type() == ir::TypeId::INT64) &&
+        isConstOp(program, inst.arg(1))) {
+        int64_t divisor = static_cast<int64_t>(getConstValue(program, inst.arg(1)));
+        if (divisor > 1) {
+            if (inst.type() == ir::TypeId::INT32) {
+                as_->movsxd(x86::rax, x86::eax);
+            }
+
+            const auto magic = computeSignedMagic(divisor);
+            as_->mov(x86::rsi, x86::rax);
+            as_->mov(x86::rcx, static_cast<uint64_t>(magic.magic));
+            as_->imul(x86::rcx);
+
+            if (magic.magic < 0) {
+                as_->add(x86::rdx, x86::rsi);
+            }
+            if (magic.shift != 0) {
+                as_->sar(x86::rdx, magic.shift);
+            }
+
+            as_->mov(x86::rax, x86::rdx);
+            as_->shr(x86::rax, 63);
+            as_->add(x86::rdx, x86::rax);
+
+            as_->mov(x86::rcx, static_cast<uint64_t>(divisor));
+            as_->imul(x86::rcx, x86::rdx);
+            as_->mov(x86::rdx, x86::rsi);
+            as_->sub(x86::rdx, x86::rcx);
+            storeResult(instOff, x86::rdx, inst.type());
+            return;
+        }
+    }
+
     loadValueToReg(inst.arg(1), x86::rcx);
 
     auto nonZeroLabel = as_->new_label();
@@ -879,32 +1006,67 @@ void FlyingStartCompiler::translateBitcast(ir::Program& /*program*/,
 
 void FlyingStartCompiler::translateLoad(ir::Program& /*program*/, const ir::InstructionView& inst,
                                         uint32_t instOff) {
-    loadValueToReg(inst.arg(0), x86::rax);  // ptr
+    const auto* ptrLoc = regAlloc_.getLocation(inst.arg(0));
+    bool deferredGep = ptrLoc != nullptr && ptrLoc->kind == LocationKind::DEFERRED &&
+                       ptrLoc->gepBase != ir::INVALID_OP;
+
+    if (deferredGep) {
+        loadValueToReg(ptrLoc->gepBase, x86::rax);
+        loadValueToReg(ptrLoc->gepIndex, x86::rcx);
+    } else {
+        loadValueToReg(inst.arg(0), x86::rax);  // ptr
+    }
 
     auto type = inst.type();
     switch (type) {
         case ir::TypeId::BOOL:
         case ir::TypeId::INT8:
-            as_->movsx(x86::rcx, x86::byte_ptr(x86::rax));
+            if (deferredGep) {
+                as_->movsx(x86::rdx,
+                           x86::byte_ptr(x86::rax, x86::rcx, gepScaleShift(ptrLoc->gepElemType)));
+            } else {
+                as_->movsx(x86::rcx, x86::byte_ptr(x86::rax));
+            }
             break;
         case ir::TypeId::INT32:
-            as_->movsxd(x86::rcx, x86::dword_ptr(x86::rax));
+            if (deferredGep) {
+                as_->movsxd(
+                    x86::rdx,
+                    x86::dword_ptr(x86::rax, x86::rcx, gepScaleShift(ptrLoc->gepElemType)));
+            } else {
+                as_->movsxd(x86::rcx, x86::dword_ptr(x86::rax));
+            }
             break;
         case ir::TypeId::INT64:
         case ir::TypeId::UINT64:
         case ir::TypeId::PTR:
-            as_->mov(x86::rcx, x86::qword_ptr(x86::rax));
+            if (deferredGep) {
+                as_->mov(x86::rdx,
+                         x86::qword_ptr(x86::rax, x86::rcx, gepScaleShift(ptrLoc->gepElemType)));
+            } else {
+                as_->mov(x86::rcx, x86::qword_ptr(x86::rax));
+            }
             break;
         case ir::TypeId::VOID:
             break;
     }
-    storeResult(instOff, x86::rcx, type);
+    storeResult(instOff, deferredGep ? x86::rdx : x86::rcx, type);
 }
 
 void FlyingStartCompiler::translateStore(ir::Program& program, const ir::InstructionView& inst,
                                          uint32_t /*instOff*/) {
     loadValueToReg(inst.arg(0), x86::rax);  // value
-    loadValueToReg(inst.arg(1), x86::rcx);  // ptr
+
+    const auto* ptrLoc = regAlloc_.getLocation(inst.arg(1));
+    bool deferredGep = ptrLoc != nullptr && ptrLoc->kind == LocationKind::DEFERRED &&
+                       ptrLoc->gepBase != ir::INVALID_OP;
+
+    if (deferredGep) {
+        loadValueToReg(ptrLoc->gepBase, x86::rcx);
+        loadValueToReg(ptrLoc->gepIndex, x86::rdx);
+    } else {
+        loadValueToReg(inst.arg(1), x86::rcx);  // ptr
+    }
 
     ir::InstructionView srcInst(program.instBuffer().data(), inst.arg(0));
     auto srcType = srcInst.type();
@@ -912,15 +1074,30 @@ void FlyingStartCompiler::translateStore(ir::Program& program, const ir::Instruc
     switch (srcType) {
         case ir::TypeId::BOOL:
         case ir::TypeId::INT8:
-            as_->mov(x86::byte_ptr(x86::rcx), x86::al);
+            if (deferredGep) {
+                as_->mov(x86::byte_ptr(x86::rcx, x86::rdx, gepScaleShift(ptrLoc->gepElemType)),
+                         x86::al);
+            } else {
+                as_->mov(x86::byte_ptr(x86::rcx), x86::al);
+            }
             break;
         case ir::TypeId::INT32:
-            as_->mov(x86::dword_ptr(x86::rcx), x86::eax);
+            if (deferredGep) {
+                as_->mov(x86::dword_ptr(x86::rcx, x86::rdx, gepScaleShift(ptrLoc->gepElemType)),
+                         x86::eax);
+            } else {
+                as_->mov(x86::dword_ptr(x86::rcx), x86::eax);
+            }
             break;
         case ir::TypeId::INT64:
         case ir::TypeId::UINT64:
         case ir::TypeId::PTR:
-            as_->mov(x86::qword_ptr(x86::rcx), x86::rax);
+            if (deferredGep) {
+                as_->mov(x86::qword_ptr(x86::rcx, x86::rdx, gepScaleShift(ptrLoc->gepElemType)),
+                         x86::rax);
+            } else {
+                as_->mov(x86::qword_ptr(x86::rcx), x86::rax);
+            }
             break;
         case ir::TypeId::VOID:
             break;
@@ -929,6 +1106,17 @@ void FlyingStartCompiler::translateStore(ir::Program& program, const ir::Instruc
 
 void FlyingStartCompiler::translateGep(ir::Program& /*program*/, const ir::InstructionView& inst,
                                        uint32_t instOff) {
+    if (canDeferGep(*currentProgram_, lsa_, instOff)) {
+        ValueLocation loc;
+        loc.kind = LocationKind::DEFERRED;
+        loc.gepBase = inst.arg(0);
+        loc.gepIndex = inst.arg(1);
+        loc.gepElemType = inst.type();
+        loc.type = ir::TypeId::PTR;
+        regAlloc_.setLocation(instOff, loc);
+        return;
+    }
+
     loadValueToReg(inst.arg(0), x86::rax);  // base
     loadValueToReg(inst.arg(1), x86::rcx);  // index
 
@@ -1083,6 +1271,22 @@ void FlyingStartCompiler::freeLastUseOperands(const ir::InstructionView& inst, u
         }
         freeIfLastUse(condOp, currentSeq_);
         return;
+    }
+
+    if (inst.opcode() == ir::Opcode::LOAD || inst.opcode() == ir::Opcode::STORE) {
+        ir::IROp ptrOp = inst.opcode() == ir::Opcode::LOAD ? inst.arg(0) : inst.arg(1);
+        const auto* ptrLoc = regAlloc_.getLocation(ptrOp);
+        if (ptrLoc != nullptr && ptrLoc->kind == LocationKind::DEFERRED &&
+            ptrLoc->gepBase != ir::INVALID_OP) {
+            uint32_t gepSeq = lsa_.seqNum(ptrOp);
+            freeIfLastUse(ptrLoc->gepBase, gepSeq);
+            freeIfLastUse(ptrLoc->gepIndex, gepSeq);
+            if (inst.opcode() == ir::Opcode::STORE) {
+                freeIfLastUse(inst.arg(0), currentSeq_);
+            }
+            freeIfLastUse(ptrOp, currentSeq_);
+            return;
+        }
     }
 
     // Deferred instructions (fused cmp): operands freed later by COND_BR above.

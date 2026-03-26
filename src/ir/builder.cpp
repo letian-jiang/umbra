@@ -268,10 +268,22 @@ IROp IRBuilder::emitLNot(IROp operand) {
 }
 
 IROp IRBuilder::emitLAnd(IROp lhs, IROp rhs) {
+    if (isConst(lhs)) {
+        return getConstValue(lhs) != 0 ? rhs : lhs;
+    }
+    if (isConst(rhs)) {
+        return getConstValue(rhs) != 0 ? lhs : rhs;
+    }
     return emitBinary(Opcode::LAND, TypeId::BOOL, lhs, rhs);
 }
 
 IROp IRBuilder::emitLOr(IROp lhs, IROp rhs) {
+    if (isConst(lhs)) {
+        return getConstValue(lhs) != 0 ? lhs : rhs;
+    }
+    if (isConst(rhs)) {
+        return getConstValue(rhs) != 0 ? rhs : lhs;
+    }
     return emitBinary(Opcode::LOR, TypeId::BOOL, lhs, rhs);
 }
 
@@ -287,11 +299,34 @@ IROp IRBuilder::emitSelect(TypeId type, IROp cond, IROp trueVal, IROp falseVal) 
 // ── Cast ─────────────────────────────────────────────────────────────────────
 
 IROp IRBuilder::emitSExt(TypeId targetType, IROp operand) {
+    if (isConst(operand)) {
+        return emitConst(targetType, getConstValue(operand));
+    }
     std::array<IROp, 1> args = {operand};
     return emitRaw(Opcode::SEXT, targetType, args.data(), 1);
 }
 
 IROp IRBuilder::emitZExt(TypeId targetType, IROp operand) {
+    if (isConst(operand)) {
+        uint64_t value = getConstValue(operand);
+        uint64_t mask = ~uint64_t{0};
+        switch (getConstType(operand)) {
+            case TypeId::BOOL:
+            case TypeId::INT8:
+                mask = 0xFF;
+                break;
+            case TypeId::INT32:
+                mask = 0xFFFFFFFFULL;
+                break;
+            case TypeId::INT64:
+            case TypeId::UINT64:
+            case TypeId::PTR:
+            case TypeId::VOID:
+                mask = ~uint64_t{0};
+                break;
+        }
+        return emitConst(targetType, value & mask);
+    }
     std::array<IROp, 1> args = {operand};
     return emitRaw(Opcode::ZEXT, targetType, args.data(), 1);
 }
@@ -302,6 +337,10 @@ IROp IRBuilder::emitTrunc(TypeId targetType, IROp operand) {
 }
 
 IROp IRBuilder::emitBitcast(TypeId targetType, IROp operand) {
+    ir::InstructionView operandInst(instBuffer_.data(), operand);
+    if (operandInst.type() == targetType || ir::typeSize(operandInst.type()) == ir::typeSize(targetType)) {
+        return operand;
+    }
     std::array<IROp, 1> args = {operand};
     return emitRaw(Opcode::BITCAST, targetType, args.data(), 1);
 }
