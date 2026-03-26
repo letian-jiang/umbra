@@ -18,6 +18,7 @@
 #include "codegen/operators/table_scan.h"
 #include "codegen/sql_values/sql_value.h"
 #include "ir/opcode.h"
+#include "ir/printer.h"
 #include "ir/program.h"
 #include "optimizer/physical_operator.h"
 #include "storage/runtime_context.h"
@@ -38,6 +39,181 @@ double elapsedMs(std::chrono::high_resolution_clock::time_point start,
 }
 
 }  // namespace
+
+// ── Shared helpers ───────────────────────────────────────────────────────────
+
+PipelineExecutor::OutputChain PipelineExecutor::buildOutputChain(
+    const optimizer::OptimizeResult& result, uint32_t numCols) {
+    const auto* projOp = static_cast<const optimizer::PhysicalProjection*>(
+        findOperator(result.root, optimizer::PhysicalNodeKind::PROJECTION));
+    const auto* sortOp = static_cast<const optimizer::PhysicalSort*>(
+        findOperator(result.root, optimizer::PhysicalNodeKind::SORT));
+
+    OutputChain chain;
+    chain.resultWriter = std::make_unique<codegen::ResultWriterTranslator>(numCols);
+    chain.bottom = chain.resultWriter.get();
+
+    if (sortOp != nullptr) {
+        chain.sortTranslator = std::make_unique<codegen::SortTranslator>(sortOp);
+        chain.sortTranslator->setParent(chain.bottom);
+        chain.resultWriter->setChild(chain.sortTranslator.get());
+        chain.bottom = chain.sortTranslator.get();
+    }
+
+    if (projOp != nullptr) {
+        chain.projTranslator = std::make_unique<codegen::ProjectionTranslator>(projOp);
+        chain.projTranslator->setParent(chain.bottom);
+        if (chain.sortTranslator) {
+            chain.sortTranslator->setChild(chain.projTranslator.get());
+        } else {
+            chain.resultWriter->setChild(chain.projTranslator.get());
+        }
+        chain.bottom = chain.projTranslator.get();
+    }
+
+    return chain;
+}
+
+// ── codegenAllPipelines ──────────────────────────────────────────────────────
+
+std::vector<CodegenResult> PipelineExecutor::codegenAllPipelines(
+    const optimizer::OptimizeResult& result) {
+    const auto* scanOp = static_cast<const optimizer::PhysicalTableScan*>(
+        findOperator(result.root, optimizer::PhysicalNodeKind::TABLE_SCAN));
+    const auto* aggOp = static_cast<const optimizer::PhysicalHashAggregate*>(
+        findOperator(result.root, optimizer::PhysicalNodeKind::HASH_AGGREGATE));
+    const auto* projOp = static_cast<const optimizer::PhysicalProjection*>(
+        findOperator(result.root, optimizer::PhysicalNodeKind::PROJECTION));
+
+    std::vector<CodegenResult> pipelines;
+
+    if (aggOp != nullptr) {
+        // ── 2-pipeline aggregate ────────────────────────────────────────────
+        assert(scanOp != nullptr && "Aggregate query must have a table scan");
+
+        // Pipeline 0: TableScan → HashAggregate(build)
+        {
+            auto scanTranslator = std::make_unique<codegen::TableScanTranslator>(scanOp);
+            hashAggTranslator_ = std::make_unique<codegen::HashAggregateTranslator>(aggOp);
+            scanTranslator->setParent(hashAggTranslator_.get());
+            hashAggTranslator_->setChild(scanTranslator.get());
+
+            codegen::CodegenContext cg;
+            codegen::setActiveContext(&cg);
+            auto funcId = cg.createFunction("pipeline_build", ir::TypeId::VOID, {ir::TypeId::PTR});
+            codegen::CompilationContext ctx(cg);
+            ctx.runtimeCtx = cg.getArg<codegen::Ptr<codegen::Int8>>(0);
+            hashAggTranslator_->produce(ctx);
+            cg.emitRetVoid();
+            auto program = cg.finalize();
+            codegen::setActiveContext(nullptr);
+
+            pipelines.push_back({std::move(program), funcId, "build"});
+        }
+
+        // Pipeline 1: HashAggregate(scan) → [Proj →] [Sort →] ResultWriter
+        {
+            uint32_t numOutputCols =
+                projOp != nullptr
+                    ? static_cast<uint32_t>(projOp->expressions.size())
+                    : static_cast<uint32_t>(aggOp->groupByKeys.size() + aggOp->aggregates.size());
+
+            auto chain = buildOutputChain(result, numOutputCols);
+            hashAggTranslator_->setParent(chain.bottom);
+            if (chain.projTranslator) {
+                chain.projTranslator->setChild(nullptr);
+            } else if (chain.sortTranslator) {
+                chain.sortTranslator->setChild(nullptr);
+            } else {
+                chain.resultWriter->setChild(nullptr);
+            }
+
+            codegen::CodegenContext cg;
+            codegen::setActiveContext(&cg);
+            auto funcId = cg.createFunction("pipeline_scan", ir::TypeId::VOID, {ir::TypeId::PTR});
+            codegen::CompilationContext ctx(cg);
+            ctx.runtimeCtx = cg.getArg<codegen::Ptr<codegen::Int8>>(0);
+            hashAggTranslator_->produceScan(ctx);
+            cg.emitRetVoid();
+            auto program = cg.finalize();
+            codegen::setActiveContext(nullptr);
+
+            pipelines.push_back({std::move(program), funcId, "scan"});
+        }
+    } else {
+        // ── Single pipeline: TableScan → [Proj →] [Sort →] ResultWriter ────
+        assert(scanOp != nullptr && "Query must have a table scan");
+
+        uint32_t numOutputCols = projOp != nullptr
+                                     ? static_cast<uint32_t>(projOp->expressions.size())
+                                     : static_cast<uint32_t>(scanOp->columnIndices.size());
+
+        auto chain = buildOutputChain(result, numOutputCols);
+
+        auto scanTranslator = std::make_unique<codegen::TableScanTranslator>(scanOp);
+        scanTranslator->setParent(chain.bottom);
+        // Wire the bottom of the chain to the scan.
+        if (chain.projTranslator) {
+            chain.projTranslator->setChild(scanTranslator.get());
+        } else if (chain.sortTranslator) {
+            chain.sortTranslator->setChild(scanTranslator.get());
+        } else {
+            chain.resultWriter->setChild(scanTranslator.get());
+        }
+
+        codegen::CodegenContext cg;
+        codegen::setActiveContext(&cg);
+        auto funcId = cg.createFunction("pipeline_0", ir::TypeId::VOID, {ir::TypeId::PTR});
+        codegen::CompilationContext ctx(cg);
+        ctx.runtimeCtx = cg.getArg<codegen::Ptr<codegen::Int8>>(0);
+        chain.resultWriter->produce(ctx);
+        cg.emitRetVoid();
+        auto program = cg.finalize();
+        codegen::setActiveContext(nullptr);
+
+        pipelines.push_back({std::move(program), funcId, "pipeline_0"});
+    }
+
+    return pipelines;
+}
+
+// ── generateIR / generateASM ─────────────────────────────────────────────────
+
+std::string PipelineExecutor::generateIR(const optimizer::OptimizeResult& result) {
+    auto pipelines = codegenAllPipelines(result);
+    hashAggTranslator_.reset();  // Explain must not leave side effects.
+
+    std::string irText;
+    for (size_t i = 0; i < pipelines.size(); ++i) {
+        irText += "=== Pipeline " + std::to_string(i) + ": " + pipelines[i].name + " ===\n";
+        irText += ir::IRPrinter::print(pipelines[i].program);
+        if (i + 1 < pipelines.size()) {
+            irText += "\n";
+        }
+    }
+    return irText;
+}
+
+std::string PipelineExecutor::generateASM(const optimizer::OptimizeResult& result) {
+    auto pipelines = codegenAllPipelines(result);
+    hashAggTranslator_.reset();  // Explain must not leave side effects.
+
+    std::string asmText;
+    for (size_t i = 0; i < pipelines.size(); ++i) {
+        std::string pipelineAsm;
+        flying_start::FlyingStartCompiler jitCompiler;
+        jitCompiler.compileWithLog(pipelines[i].program, pipelines[i].funcId, pipelineAsm);
+
+        asmText += "=== Pipeline " + std::to_string(i) + ": " + pipelines[i].name + " ===\n";
+        asmText += pipelineAsm;
+        if (i + 1 < pipelines.size()) {
+            asmText += "\n";
+        }
+    }
+    return asmText;
+}
+
+// ── Constructor / Public API ─────────────────────────────────────────────────
 
 PipelineExecutor::PipelineExecutor(Backend backend) : backend_(backend) {}
 
@@ -75,6 +251,8 @@ codegen::HashTable* PipelineExecutor::hashTable() const {
     }
     return nullptr;
 }
+
+// ── Execute pipelines (codegen + compile + run) ──────────────────────────────
 
 void PipelineExecutor::executeBuildPipeline(const optimizer::OptimizeResult& result, Table& table) {
     // Find physical operators.
@@ -198,39 +376,17 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
     // Prepare result collector buffer.
     collector.prepare(1024);  // Max 1024 output rows (plenty for Q1's ~4 rows).
 
-    // Create operator translators for scan pipeline.
-    // Chain: HashAggregate(scan) -> Projection -> Sort -> ResultWriter.
-    auto resultWriter = std::make_unique<codegen::ResultWriterTranslator>(numOutputCols);
-
-    // Build the chain from bottom (result writer) to top.
-    codegen::OperatorTranslator* currentParent = resultWriter.get();
-
-    std::unique_ptr<codegen::SortTranslator> sortTranslator;
-    if (sortOp != nullptr) {
-        sortTranslator = std::make_unique<codegen::SortTranslator>(sortOp);
-        sortTranslator->setParent(currentParent);
-        resultWriter->setChild(sortTranslator.get());
-        currentParent = sortTranslator.get();
-    } else {
-        resultWriter->setChild(nullptr);  // Will be set below.
-    }
-
-    std::unique_ptr<codegen::ProjectionTranslator> projTranslator;
-    if (projOp != nullptr) {
-        projTranslator = std::make_unique<codegen::ProjectionTranslator>(projOp);
-        projTranslator->setParent(currentParent);
-        if (sortTranslator) {
-            sortTranslator->setChild(projTranslator.get());
-        } else {
-            resultWriter->setChild(projTranslator.get());
-        }
-        currentParent = projTranslator.get();
-    }
+    // Build output chain: [Sort →] [Proj →] ResultWriter.
+    auto chain = buildOutputChain(result, numOutputCols);
 
     // HashAggregate scan side feeds into the chain.
-    hashAggTranslator_->setParent(currentParent);
-    if (projTranslator) {
-        projTranslator->setChild(nullptr);  // Hash agg scan drives produce.
+    hashAggTranslator_->setParent(chain.bottom);
+    if (chain.projTranslator) {
+        chain.projTranslator->setChild(nullptr);  // Hash agg scan drives produce.
+    } else if (chain.sortTranslator) {
+        chain.sortTranslator->setChild(nullptr);
+    } else {
+        chain.resultWriter->setChild(nullptr);
     }
 
     // ── Codegen phase: generate IR via Tidy Tuples ──────────────────────
@@ -337,6 +493,8 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
         profiles_[1].executeMs = elapsedMs(execStart, execEnd);
     }
 }
+
+// ── Utilities ────────────────────────────────────────────────────────────────
 
 const optimizer::PhysicalOperator* PipelineExecutor::findOperator(
     const optimizer::PhysicalOperator* root, optimizer::PhysicalNodeKind kind) {

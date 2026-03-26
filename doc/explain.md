@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-EXPLAIN 展示查询在各个编译阶段的中间表示，用于调试和性能分析。通过在 SQL 前加 `EXPLAIN` 前缀触发，不执行查询。
+EXPLAIN 展示查询在各个编译阶段的中间表示，用于调试和性能分析。通过在 SQL 前加 `EXPLAIN` 前缀触发。除 PROFILE 外均不执行查询。
 
 ```sql
 EXPLAIN AST      SELECT ...;
@@ -94,61 +94,66 @@ Pipeline 1: [scan]
 
 ### 2.5 IR
 
-Umbra IR 的文本表示（见 doc/ir.md §8）。每个 pipeline function 单独打印。
+Umbra IR 的文本表示（见 doc/ir.md §8）。通过 `PipelineExecutor::generateIR()` 对每个 pipeline 独立执行 codegen（Tidy Tuples produce/consume），生成 `ir::Program`，再用 `IRPrinter::print()` 格式化输出。不执行查询。
 
 ```
 EXPLAIN IR ...
 
-=== Pipeline 0 ===
-define void @pipeline_0(ptr %0) {
+IR:
+=== Pipeline 0: build ===
+define void @pipeline_build(ptr %0) {
 entry:
-    %1 = const i64 0
-    %2 = const i64 60175
-    %3 = const i32 -455
-    br loop_header
-
-loop_header:
-    %4 = phi2 i64 [entry: %1, loop_continue: %20]
-    %5 = cmplt i64 %4, %2
-    condbr %5, loop_body, loop_end
-
-loop_body:
+    %0 = funarg ptr %0
+    %6 = bitcast ptr %0
+    %12 = load ptr %6
     ...
+    br void bb1
 
-loop_end:
-    retvoid
+bb1:
+    %238 = phi2 i64 [entry: %222], [bb7: %2080]
+    ...
+    condbr void %393, bb3, bb4
+    ...
 }
 
-=== Pipeline 1 ===
-define void @pipeline_1(ptr %0) {
+; host function @ht_lookup
+; host function @ht_insert
+
+=== Pipeline 1: scan ===
+define void @pipeline_scan(ptr %0) {
     ...
 }
 ```
 
 ### 2.6 ASM
 
-Flying Start 生成的 x86-64 反汇编。使用 asmjit 的内置 formatter 或简单的线性反汇编。
+Flying Start 生成的 x86-64 汇编。通过 `PipelineExecutor::generateASM()` 对每个 pipeline 执行 codegen + JIT 编译，使用 asmjit 的 `StringLogger` 在编译过程中捕获汇编文本。始终使用 Flying Start 后端（与当前 `.backend` 设置无关）。不执行查询。
 
 ```
 EXPLAIN ASM ...
 
-=== Pipeline 0 (198 bytes) ===
-0x00:  push   rbp
-0x01:  mov    rbp, rsp
-0x04:  sub    rsp, 0x40
-0x08:  mov    r12, rdi
-0x0b:  xor    r9d, r9d
-0x0e:  mov    r10, 0xeb0f
-       ...
-0x42:  cmp    r9, r10
-0x45:  jge    0x98
-0x47:  mov    eax, [r12+r9*4+0x28]
-0x4c:  cmp    eax, -455
-0x4f:  jg     0x90
-       ...
-0x98:  mov    rsp, rbp
-0x9b:  pop    rbp
-0x9c:  ret
+ASM (x86-64, Flying Start):
+=== Pipeline 0: build ===
+push rbp
+mov rbp, rsp
+sub rsp, 4096
+push rbx
+...
+L0:
+mov qword ptr [rbp-8], rdi
+...
+crc32 rax, rcx
+...
+call rax
+...
+
+=== Pipeline 1: scan ===
+push rbp
+mov rbp, rsp
+...
+idiv rcx
+...
+ret
 ```
 
 ### 2.7 PROFILE
@@ -175,7 +180,7 @@ Result: 4 rows
 
 ### 2.8 ALL
 
-按顺序打印 AST → LOGICAL → PHYSICAL → PIPELINE → IR → ASM，不执行查询。
+按顺序打印 AST → LOGICAL → PHYSICAL → PIPELINE，不执行查询。IR 和 ASM 需要单独通过 `EXPLAIN IR` / `EXPLAIN ASM` 查看（因为需要 codegen/compile）。ALL 模式下 IR 位置显示提示信息 `(use EXPLAIN IR to see generated IR)`。
 
 ---
 
@@ -199,53 +204,70 @@ parseSQL(input):
 ### 3.2 执行路径
 
 ```
-executeExplain(level, ast):
-    if level >= AST:
-        print formatAST(ast)
+runExplain(level, sql, catalog, table, backend):
+    // Parse
+    ast = parse(sql)
+    if level == AST: return formatAST(ast)
 
+    // Bind
     bound = bind(ast)
-    if level >= LOGICAL:
-        print formatLogicalPlan(bound)
+    if level == LOGICAL: return formatLogicalPlan(bound)
 
+    // Optimize
     physical = optimize(bound)
-    if level >= PHYSICAL:
-        print formatPhysicalPlan(physical)
+    if level == PHYSICAL: return formatPhysicalPlan(physical)
+    if level == PIPELINE: return formatPipelines(physical.pipelines)
 
-    pipelines = decomposePipelines(physical)
-    if level >= PIPELINE:
-        print formatPipelines(pipelines)
+    // IR: codegen only (no execution)
+    if level == IR:
+        executor = PipelineExecutor(backend)
+        return executor.generateIR(physical)
 
-    if level >= IR:
-        for each pipeline:
-            irProgram = tidyTuples.compile(pipeline)
-            print formatIR(irProgram)
+    // ASM: codegen + compile (always Flying Start, no execution)
+    if level == ASM:
+        executor = PipelineExecutor(FLYING_START)
+        return executor.generateASM(physical)
 
-    if level >= ASM:
-        for each pipeline:
-            flyingStart.compile(irProgram)
-            print formatAsm(flyingStart.getCode())
-
+    // PROFILE: full execution with per-pipeline timing
     if level == PROFILE:
-        // 完整执行并计时
-        executeWithProfiling(pipelines)
+        executor = PipelineExecutor(backend)
+        executor.enableProfiling()
+        executor.execute(physical, table, collector)
+        return formatProfile(executor.profiles())
+
+    // ALL: print AST → LOGICAL → PHYSICAL → PIPELINE → IR hint
+    // IR/ASM not included (require separate codegen)
 ```
 
 非 PROFILE 模式下，到达目标 level 后即停止，不继续后续阶段。例如 `EXPLAIN LOGICAL` 只执行 parse + bind，不做 optimize。
 
-ALL 模式执行所有阶段到 ASM，但不执行查询。
+`EXPLAIN IR` 和 `EXPLAIN ASM` 需要执行 codegen 阶段（Tidy Tuples produce/consume），但不执行生成的代码。`EXPLAIN ASM` 始终使用 Flying Start 后端，因为 Interpreter 不生成机器码。
 
-### 3.3 Formatter
+### 3.3 Formatter / IR & ASM Generation
 
-每个阶段有独立的 formatter，接受对应的数据结构，返回 string：
+每个阶段有独立的 formatter 或生成方法：
 
 ```
-formatAST(ast) → string            // 递归树形打印
-formatLogicalPlan(plan) → string   // 递归，每节点标注 output schema
-formatPhysicalPlan(plan) → string  // 递归，标注算子类型和参数
-formatPipelines(pipelines) → string
-formatIR(program) → string         // 遍历 function/block/instruction，按 §2.5 格式输出
-formatAsm(codeBuffer) → string     // asmjit Logger 或手动反汇编
+formatAST(ast) → string                    // parser::ASTPrinter::print()
+formatLogicalPlan(plan) → string           // binder::BoundPlanPrinter::print()
+formatPhysicalPlan(plan) → string          // optimizer::PhysicalPlanPrinter::printPlan()
+formatPipelines(pipelines) → string        // optimizer::PhysicalPlanPrinter::printPipelines()
+PipelineExecutor::generateIR(result)       // codegen → ir::IRPrinter::print(program)
+PipelineExecutor::generateASM(result)      // codegen → FlyingStartCompiler::compileWithLog()
 ```
+
+**IR 生成流程** (`generateIR`):
+1. 为每个 pipeline 创建 operator translator 链
+2. 创建 `CodegenContext`，调用 `produce()` 生成 IR
+3. `finalize()` 得到 `ir::Program`
+4. 用 `IRPrinter::print()` 格式化为文本
+
+**ASM 生成流程** (`generateASM`):
+1. 同 IR 流程的 1-3 步
+2. 创建 `FlyingStartCompiler`，调用 `compileWithLog(program, funcId, asmOutput)`
+3. `compileWithLog` 在 asmjit `CodeHolder` 上挂载 `StringLogger`
+4. 编译过程中 asmjit 自动将每条 x86-64 指令写入 logger
+5. 编译完成后从 `StringLogger::data()` 提取汇编文本
 
 ---
 
@@ -258,5 +280,5 @@ formatAsm(codeBuffer) → string     // asmjit Logger 或手动反汇编
 | EXPLAIN 输出到 JSON | 只支持文本 | |
 | Cost 信息在 plan 中标注 | 无 cost model，不标注 | |
 | per-operator row count | PROFILE 只报告 pipeline 级别 | |
-| EXPLAIN IR 打印完整 IR | MVP 只标注 IR 在 pipeline 执行期间生成 | IR 打印需要 codegen 重构暴露中间 IR |
-| EXPLAIN ASM 反汇编 | MVP 未实现 ASM 级别 | 需要 asmjit Logger 集成 |
+| ~~EXPLAIN IR 打印完整 IR~~ | ~~MVP 只标注 IR 在 pipeline 执行期间生成~~ | **已实现** — `PipelineExecutor::generateIR()` |
+| ~~EXPLAIN ASM 反汇编~~ | ~~MVP 未实现 ASM 级别~~ | **已实现** — `FlyingStartCompiler::compileWithLog()` + asmjit `StringLogger` |

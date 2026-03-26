@@ -187,8 +187,8 @@ BoundExpr* Binder::bindBinaryExpr(const parser::BinaryExpr* binExpr) {
         }
         auto* lit = static_cast<BoundLiteral*>(expr);
         if (lit->strValue.size() > targetType.maxLen) {
-            throw BindError("string literal too long for CHAR(" + std::to_string(targetType.maxLen) +
-                            ")");
+            throw BindError("string literal too long for CHAR(" +
+                            std::to_string(targetType.maxLen) + ")");
         }
         if (targetType.maxLen == 1) {
             if (lit->strValue.empty()) {
