@@ -27,7 +27,7 @@ static Catalog makeQ1Catalog() {
         {"l_suppkey", SQLType::integer(), 2},       {"l_linenumber", SQLType::integer(), 3},
         {"l_quantity", SQLType::decimal(15, 2), 4}, {"l_extendedprice", SQLType::decimal(15, 2), 5},
         {"l_discount", SQLType::decimal(15, 2), 6}, {"l_tax", SQLType::decimal(15, 2), 7},
-        {"l_returnflag", SQLType::boolean(), 8},    {"l_linestatus", SQLType::boolean(), 9},
+        {"l_returnflag", SQLType::fixedChar(1), 8}, {"l_linestatus", SQLType::fixedChar(1), 9},
         {"l_shipdate", SQLType::date(), 10},
     };
     catalog.addTable(std::move(def));
@@ -53,48 +53,48 @@ static Table makeVariantsTable() {
     constexpr int N = 8;
 
     for (int c = 0; c < 4; ++c) {
-        Column col = Column::create(SQLTypeId::INTEGER);
+        Column col = Column::create(SQLType::integer());
         std::get<std::vector<int32_t>>(col.storage).resize(N, 0);
         table.columns.push_back(std::move(col));
     }
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(col.storage);
         v = {1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000};
         table.columns.push_back(std::move(col));
     }
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(col.storage);
         v = {10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000};
         table.columns.push_back(std::move(col));
     }
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(col.storage);
         v = {5, 5, 5, 5, 5, 5, 5, 5};
         table.columns.push_back(std::move(col));
     }
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(col.storage);
         v = {8, 8, 8, 8, 8, 8, 8, 8};
         table.columns.push_back(std::move(col));
     }
     {
-        Column col = Column::create(SQLTypeId::BOOLEAN);
+        Column col = Column::create(SQLType::fixedChar(1));
         auto& v = std::get<std::vector<int8_t>>(col.storage);
         v = {65, 65, 65, 65, 65, 65, 65, 65};  // All 'A'
         table.columns.push_back(std::move(col));
     }
     {
-        Column col = Column::create(SQLTypeId::BOOLEAN);
+        Column col = Column::create(SQLType::fixedChar(1));
         auto& v = std::get<std::vector<int8_t>>(col.storage);
         v = {70, 70, 70, 70, 70, 70, 70, 70};  // All 'F'
         table.columns.push_back(std::move(col));
     }
     {
-        Column col = Column::create(SQLTypeId::DATE);
+        Column col = Column::create(SQLType::date());
         auto& v = std::get<std::vector<int32_t>>(col.storage);
         v = {-580, -550, -519, -488, -474, -458, -444, -427};
         table.columns.push_back(std::move(col));
@@ -215,33 +215,33 @@ TEST_CASE("Q1 variant: multi-group test", "[sql][q1_variants]") {
     constexpr int N = 6;
 
     for (int c = 0; c < 4; ++c) {
-        Column col = Column::create(SQLTypeId::INTEGER);
+        Column col = Column::create(SQLType::integer());
         std::get<std::vector<int32_t>>(col.storage).resize(N, 0);
         table.columns.push_back(std::move(col));
     }
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         std::get<std::vector<int64_t>>(col.storage) = {1000, 2000, 3000, 4000, 5000, 6000};
         table.columns.push_back(std::move(col));
     }
     for (int c = 0; c < 3; ++c) {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         std::get<std::vector<int64_t>>(col.storage).resize(N, 0);
         table.columns.push_back(std::move(col));
     }
     {
-        Column col = Column::create(SQLTypeId::BOOLEAN);
+        Column col = Column::create(SQLType::fixedChar(1));
         // 3 different flags: A, A, N, N, R, R
         std::get<std::vector<int8_t>>(col.storage) = {65, 65, 78, 78, 82, 82};
         table.columns.push_back(std::move(col));
     }
     {
-        Column col = Column::create(SQLTypeId::BOOLEAN);
+        Column col = Column::create(SQLType::fixedChar(1));
         std::get<std::vector<int8_t>>(col.storage) = {70, 70, 79, 79, 70, 70};
         table.columns.push_back(std::move(col));
     }
     {
-        Column col = Column::create(SQLTypeId::DATE);
+        Column col = Column::create(SQLType::date());
         // All pass the standard Q1 filter.
         std::get<std::vector<int32_t>>(col.storage) = {-600, -600, -600, -600, -600, -600};
         table.columns.push_back(std::move(col));

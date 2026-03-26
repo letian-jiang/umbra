@@ -102,10 +102,10 @@ TableDef lineitemTableDef() {
         {"l_suppkey", SQLType::integer(), 2},       {"l_linenumber", SQLType::integer(), 3},
         {"l_quantity", SQLType::decimal(15, 2), 4}, {"l_extendedprice", SQLType::decimal(15, 2), 5},
         {"l_discount", SQLType::decimal(15, 2), 6}, {"l_tax", SQLType::decimal(15, 2), 7},
-        {"l_returnflag", SQLType::varchar(1), 8},   {"l_linestatus", SQLType::varchar(1), 9},
+        {"l_returnflag", SQLType::fixedChar(1), 8}, {"l_linestatus", SQLType::fixedChar(1), 9},
         {"l_shipdate", SQLType::date(), 10},        {"l_commitdate", SQLType::date(), 11},
-        {"l_receiptdate", SQLType::date(), 12},     {"l_shipinstruct", SQLType::varchar(25), 13},
-        {"l_shipmode", SQLType::varchar(10), 14},   {"l_comment", SQLType::varchar(44), 15},
+        {"l_receiptdate", SQLType::date(), 12},     {"l_shipinstruct", SQLType::fixedChar(25), 13},
+        {"l_shipmode", SQLType::fixedChar(10), 14}, {"l_comment", SQLType::varchar(44), 15},
     };
     return def;
 }
@@ -127,7 +127,7 @@ Table loadTblFile(const std::string& filePath, const TableDef& schema) {
 
     // Create columns based on schema
     for (const auto& colDef : schema.columns) {
-        table.columns.push_back(Column::create(colDef.type.id));
+        table.columns.push_back(Column::create(colDef.type));
     }
 
     std::ifstream file(filePath);
@@ -177,6 +177,17 @@ Table loadTblFile(const std::string& filePath, const TableDef& schema) {
                 case SQLTypeId::DATE: {
                     auto& vec = std::get<std::vector<int32_t>>(col.storage);
                     vec.push_back(parseDate(field));
+                    break;
+                }
+                case SQLTypeId::CHAR: {
+                    auto& vec = std::get<std::vector<int8_t>>(col.storage);
+                    auto maxLen = static_cast<size_t>(colDef.type.maxLen);
+                    // Truncate if too long, then pad with spaces if too short.
+                    std::string padded = field.substr(0, maxLen);
+                    padded.resize(maxLen, ' ');
+                    for (char ch : padded) {
+                        vec.push_back(static_cast<int8_t>(ch));
+                    }
                     break;
                 }
                 case SQLTypeId::VARCHAR: {

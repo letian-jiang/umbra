@@ -9,7 +9,7 @@
 namespace umbra::codegen {
 
 /// Map a SQL type to the corresponding IR TypeId.
-ir::TypeId sqlTypeToIR(SQLTypeId typeId);
+ir::TypeId sqlTypeToIR(const SQLType& type);
 
 /// Binary operation kind for SQL value arithmetic.
 enum class BinaryOp { ADD, SUB, MUL, DIV };
@@ -46,7 +46,7 @@ class SQLValue {
     [[nodiscard]] const SQLType& type() const { return type_; }
 
     /// Get the IR type corresponding to this SQL type.
-    [[nodiscard]] ir::TypeId irType() const { return sqlTypeToIR(type_.id); }
+    [[nodiscard]] ir::TypeId irType() const { return sqlTypeToIR(type_); }
 
     // ── Binary arithmetic ───────────────────────────────────────────────
 

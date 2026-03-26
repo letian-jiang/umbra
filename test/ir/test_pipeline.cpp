@@ -110,7 +110,7 @@ static Table makeTestLineitemTable() {
 
     // Columns 0-3: unused placeholders (int32).
     for (int i = 0; i < 4; ++i) {
-        Column c = Column::create(SQLTypeId::INTEGER);
+        Column c = Column::create(SQLType::integer());
         auto& v = std::get<std::vector<int32_t>>(c.storage);
         v = {0, 0, 0, 0, 0, 0};
         table.columns.push_back(std::move(c));
@@ -118,7 +118,7 @@ static Table makeTestLineitemTable() {
 
     // Column 4: l_quantity (DECIMAL 15,2 → int64, scaled by 100)
     {
-        Column c = Column::create(SQLTypeId::DECIMAL);
+        Column c = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(c.storage);
         // Quantities: 10.00, 20.00, 30.00, 15.00, 25.00, 35.00 → scaled by 100
         v = {1000, 2000, 3000, 1500, 2500, 3500};
@@ -127,7 +127,7 @@ static Table makeTestLineitemTable() {
 
     // Column 5: l_extendedprice (DECIMAL 15,2 → int64)
     {
-        Column c = Column::create(SQLTypeId::DECIMAL);
+        Column c = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(c.storage);
         // Prices: 100.00, 200.00, 300.00, 150.00, 250.00, 350.00
         v = {10000, 20000, 30000, 15000, 25000, 35000};
@@ -136,7 +136,7 @@ static Table makeTestLineitemTable() {
 
     // Column 6: l_discount (DECIMAL 15,2 → int64)
     {
-        Column c = Column::create(SQLTypeId::DECIMAL);
+        Column c = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(c.storage);
         // Discounts: 0.05, 0.10, 0.05, 0.10, 0.05, 0.10
         v = {5, 10, 5, 10, 5, 10};
@@ -145,7 +145,7 @@ static Table makeTestLineitemTable() {
 
     // Column 7: l_tax (DECIMAL 15,2 → int64)
     {
-        Column c = Column::create(SQLTypeId::DECIMAL);
+        Column c = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(c.storage);
         // Tax: 0.08 for all
         v = {8, 8, 8, 8, 8, 8};
@@ -154,7 +154,7 @@ static Table makeTestLineitemTable() {
 
     // Column 8: l_returnflag (INT8 — 'A'=65 or 'N'=78)
     {
-        Column c = Column::create(SQLTypeId::BOOLEAN);
+        Column c = Column::create(SQLType::fixedChar(1));
         auto& v = std::get<std::vector<int8_t>>(c.storage);
         // Group A (65): rows 0, 1, 2; Group N (78): rows 3, 4, 5
         v = {65, 65, 65, 78, 78, 78};
@@ -163,7 +163,7 @@ static Table makeTestLineitemTable() {
 
     // Column 9: l_linestatus (INT8 — 'F'=70 or 'O'=79)
     {
-        Column c = Column::create(SQLTypeId::BOOLEAN);
+        Column c = Column::create(SQLType::fixedChar(1));
         auto& v = std::get<std::vector<int8_t>>(c.storage);
         // All in same linestatus 'F'=70
         v = {70, 70, 70, 70, 70, 70};
@@ -172,7 +172,7 @@ static Table makeTestLineitemTable() {
 
     // Column 10: l_shipdate (DATE — days since 2000-01-01)
     {
-        Column c = Column::create(SQLTypeId::DATE);
+        Column c = Column::create(SQLType::date());
         auto& v = std::get<std::vector<int32_t>>(c.storage);
         // All dates before the threshold (pass filter).
         // 1998-09-02 is about -456 days before 2000-01-01
@@ -383,8 +383,8 @@ TEST_CASE("Pipeline: full Q1-like two-pipeline execution", "[pipeline]") {
 
     // Set up result collector.
     ResultCollector collector;
-    collector.setSchema({{"l_returnflag", SQLType{SQLTypeId::BOOLEAN}},
-                         {"l_linestatus", SQLType{SQLTypeId::BOOLEAN}},
+    collector.setSchema({{"l_returnflag", SQLType::fixedChar(1)},
+                         {"l_linestatus", SQLType::fixedChar(1)},
                          {"sum_qty", SQLType::bigint()},
                          {"sum_base_price", SQLType::bigint()},
                          {"count_order", SQLType::bigint()}});
@@ -424,7 +424,7 @@ TEST_CASE("Pipeline: all rows in single group", "[pipeline]") {
 
     // Columns 0-3: placeholders.
     for (int i = 0; i < 4; ++i) {
-        Column c = Column::create(SQLTypeId::INTEGER);
+        Column c = Column::create(SQLType::integer());
         auto& v = std::get<std::vector<int32_t>>(c.storage);
         v = {0, 0, 0};
         table.columns.push_back(std::move(c));
@@ -432,7 +432,7 @@ TEST_CASE("Pipeline: all rows in single group", "[pipeline]") {
 
     // Column 4: l_quantity
     {
-        Column c = Column::create(SQLTypeId::DECIMAL);
+        Column c = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(c.storage);
         v = {1000, 2000, 3000};  // 10.00, 20.00, 30.00
         table.columns.push_back(std::move(c));
@@ -440,7 +440,7 @@ TEST_CASE("Pipeline: all rows in single group", "[pipeline]") {
 
     // Columns 5,6,7: decimal placeholders.
     for (int i = 0; i < 3; ++i) {
-        Column c = Column::create(SQLTypeId::DECIMAL);
+        Column c = Column::create(SQLType::decimal(15, 2));
         auto& v = std::get<std::vector<int64_t>>(c.storage);
         v = {0, 0, 0};
         table.columns.push_back(std::move(c));
@@ -448,7 +448,7 @@ TEST_CASE("Pipeline: all rows in single group", "[pipeline]") {
 
     // Column 8: l_returnflag (all same: 'A'=65)
     {
-        Column c = Column::create(SQLTypeId::BOOLEAN);
+        Column c = Column::create(SQLType::fixedChar(1));
         auto& v = std::get<std::vector<int8_t>>(c.storage);
         v = {65, 65, 65};
         table.columns.push_back(std::move(c));
@@ -456,7 +456,7 @@ TEST_CASE("Pipeline: all rows in single group", "[pipeline]") {
 
     // Column 9: l_linestatus (all same: 'F'=70)
     {
-        Column c = Column::create(SQLTypeId::BOOLEAN);
+        Column c = Column::create(SQLType::fixedChar(1));
         auto& v = std::get<std::vector<int8_t>>(c.storage);
         v = {70, 70, 70};
         table.columns.push_back(std::move(c));
@@ -464,7 +464,7 @@ TEST_CASE("Pipeline: all rows in single group", "[pipeline]") {
 
     // Column 10: l_shipdate (all pass filter)
     {
-        Column c = Column::create(SQLTypeId::DATE);
+        Column c = Column::create(SQLType::date());
         auto& v = std::get<std::vector<int32_t>>(c.storage);
         v = {-500, -500, -500};
         table.columns.push_back(std::move(c));
@@ -538,9 +538,9 @@ TEST_CASE("Pipeline: filter rejects all rows", "[pipeline]") {
 
     Table simpleTable;
     simpleTable.name = "test_table";
-    Column c0 = Column::create(SQLTypeId::INTEGER);
+    Column c0 = Column::create(SQLType::integer());
     std::get<std::vector<int32_t>>(c0.storage) = {10, 20, 30, 40, 50};
-    Column c1 = Column::create(SQLTypeId::BIGINT);
+    Column c1 = Column::create(SQLType::bigint());
     std::get<std::vector<int64_t>>(c1.storage) = {100, 200, 300, 400, 500};
     simpleTable.columns = {std::move(c0), std::move(c1)};
     simpleTable.rowCount = 5;

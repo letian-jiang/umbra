@@ -17,7 +17,7 @@ using namespace umbra;
 
 TEST_CASE("Column create and push", "[storage]") {
     SECTION("INTEGER column") {
-        auto col = Column::create(SQLTypeId::INTEGER);
+        auto col = Column::create(SQLType::integer());
         REQUIRE(col.elemSize == 4);
         REQUIRE(col.size() == 0);
 
@@ -32,7 +32,7 @@ TEST_CASE("Column create and push", "[storage]") {
     }
 
     SECTION("BIGINT column") {
-        auto col = Column::create(SQLTypeId::BIGINT);
+        auto col = Column::create(SQLType::bigint());
         REQUIRE(col.elemSize == 8);
 
         auto& vec = std::get<std::vector<int64_t>>(col.storage);
@@ -44,7 +44,7 @@ TEST_CASE("Column create and push", "[storage]") {
     }
 
     SECTION("DECIMAL column") {
-        auto col = Column::create(SQLTypeId::DECIMAL);
+        auto col = Column::create(SQLType::decimal(15, 2));
         REQUIRE(col.elemSize == 8);
 
         auto& vec = std::get<std::vector<int64_t>>(col.storage);
@@ -56,7 +56,7 @@ TEST_CASE("Column create and push", "[storage]") {
     }
 
     SECTION("DATE column") {
-        auto col = Column::create(SQLTypeId::DATE);
+        auto col = Column::create(SQLType::date());
         REQUIRE(col.elemSize == 4);
 
         auto& vec = std::get<std::vector<int32_t>>(col.storage);
@@ -66,7 +66,7 @@ TEST_CASE("Column create and push", "[storage]") {
     }
 
     SECTION("VARCHAR column") {
-        auto col = Column::create(SQLTypeId::VARCHAR);
+        auto col = Column::create(SQLType::varchar(0));
         REQUIRE(col.elemSize == 8);
 
         auto& vec = std::get<std::vector<StringValue>>(col.storage);
@@ -82,7 +82,7 @@ TEST_CASE("Column create and push", "[storage]") {
     }
 
     SECTION("BOOLEAN column") {
-        auto col = Column::create(SQLTypeId::BOOLEAN);
+        auto col = Column::create(SQLType::boolean());
         REQUIRE(col.elemSize == 1);
 
         auto& vec = std::get<std::vector<int8_t>>(col.storage);
@@ -96,7 +96,7 @@ TEST_CASE("Column create and push", "[storage]") {
     }
 
     SECTION("const data access") {
-        auto col = Column::create(SQLTypeId::INTEGER);
+        auto col = Column::create(SQLType::integer());
         auto& vec = std::get<std::vector<int32_t>>(col.storage);
         vec.push_back(99);
 
@@ -113,8 +113,8 @@ TEST_CASE("Table construction and finalize", "[storage]") {
     table.name = "test_table";
 
     // Add two columns: INTEGER and VARCHAR
-    table.columns.push_back(Column::create(SQLTypeId::INTEGER));
-    table.columns.push_back(Column::create(SQLTypeId::VARCHAR));
+    table.columns.push_back(Column::create(SQLType::integer()));
+    table.columns.push_back(Column::create(SQLType::varchar(0)));
 
     // Push data
     auto& intVec = std::get<std::vector<int32_t>>(table.columns[0].storage);
@@ -291,7 +291,7 @@ TEST_CASE("lineitemTableDef", "[storage]") {
     REQUIRE(def.columns[4].type.scale == 2);
 
     REQUIRE(def.columns[8].name == "l_returnflag");
-    REQUIRE(def.columns[8].type.id == SQLTypeId::VARCHAR);
+    REQUIRE(def.columns[8].type.id == SQLTypeId::CHAR);
     REQUIRE(def.columns[8].type.maxLen == 1);
 
     REQUIRE(def.columns[10].name == "l_shipdate");
@@ -359,18 +359,16 @@ TEST_CASE("Load TBL file", "[storage]") {
     REQUIRE(discount[1] == 9);
     REQUIRE(discount[2] == 10);
 
-    // Check l_returnflag (column 8, VARCHAR) — should be "N" for all
-    auto* returnFlag = static_cast<StringValue*>(table.columnPtrs()[8]);
+    // Check l_returnflag (column 8, CHAR(1)) — should be 'N' for all
+    auto* returnFlag = static_cast<int8_t*>(table.columnPtrs()[8]);
     for (int i = 0; i < 3; ++i) {
-        std::string_view sv(table.stringBuffer.data() + returnFlag[i].offset, returnFlag[i].len);
-        REQUIRE(sv == "N");
+        REQUIRE(returnFlag[i] == 'N');
     }
 
-    // Check l_linestatus (column 9, VARCHAR) — should be "O" for all
-    auto* lineStatus = static_cast<StringValue*>(table.columnPtrs()[9]);
+    // Check l_linestatus (column 9, CHAR(1)) — should be 'O' for all
+    auto* lineStatus = static_cast<int8_t*>(table.columnPtrs()[9]);
     for (int i = 0; i < 3; ++i) {
-        std::string_view sv(table.stringBuffer.data() + lineStatus[i].offset, lineStatus[i].len);
-        REQUIRE(sv == "O");
+        REQUIRE(lineStatus[i] == 'O');
     }
 
     // Check l_shipdate (column 10, DATE)
@@ -379,21 +377,21 @@ TEST_CASE("Load TBL file", "[storage]") {
     REQUIRE(shipDate[1] == parseDate("1996-04-12"));
     REQUIRE(shipDate[2] == parseDate("1996-01-29"));
 
-    // Check l_shipinstruct (column 13, VARCHAR)
-    auto* shipInstruct = static_cast<StringValue*>(table.columnPtrs()[13]);
-    std::string_view si0(table.stringBuffer.data() + shipInstruct[0].offset, shipInstruct[0].len);
-    REQUIRE(si0 == "DELIVER IN PERSON");
-    std::string_view si1(table.stringBuffer.data() + shipInstruct[1].offset, shipInstruct[1].len);
-    REQUIRE(si1 == "TAKE BACK RETURN");
+    // Check l_shipinstruct (column 13, CHAR(25)) — 25 bytes per row, space-padded
+    auto* shipInstruct = static_cast<int8_t*>(table.columnPtrs()[13]);
+    std::string_view si0(reinterpret_cast<const char*>(shipInstruct), 25);
+    REQUIRE(si0 == "DELIVER IN PERSON        ");
+    std::string_view si1(reinterpret_cast<const char*>(shipInstruct + 25), 25);
+    REQUIRE(si1 == "TAKE BACK RETURN         ");
 
-    // Check l_shipmode (column 14, VARCHAR)
-    auto* shipMode = static_cast<StringValue*>(table.columnPtrs()[14]);
-    std::string_view sm0(table.stringBuffer.data() + shipMode[0].offset, shipMode[0].len);
-    REQUIRE(sm0 == "TRUCK");
-    std::string_view sm1(table.stringBuffer.data() + shipMode[1].offset, shipMode[1].len);
-    REQUIRE(sm1 == "MAIL");
-    std::string_view sm2(table.stringBuffer.data() + shipMode[2].offset, shipMode[2].len);
-    REQUIRE(sm2 == "REG AIR");
+    // Check l_shipmode (column 14, CHAR(10)) — 10 bytes per row, space-padded
+    auto* shipMode = static_cast<int8_t*>(table.columnPtrs()[14]);
+    std::string_view sm0(reinterpret_cast<const char*>(shipMode), 10);
+    REQUIRE(sm0 == "TRUCK     ");
+    std::string_view sm1(reinterpret_cast<const char*>(shipMode + 10), 10);
+    REQUIRE(sm1 == "MAIL      ");
+    std::string_view sm2(reinterpret_cast<const char*>(shipMode + 20), 10);
+    REQUIRE(sm2 == "REG AIR   ");
 
     // Check l_comment (column 15, VARCHAR)
     auto* comment = static_cast<StringValue*>(table.columnPtrs()[15]);
@@ -417,7 +415,7 @@ TEST_CASE("RuntimeContext wiring with Table", "[storage]") {
     // Build a small table and wire it into a RuntimeContext
     Table table;
     table.name = "test";
-    table.columns.push_back(Column::create(SQLTypeId::INTEGER));
+    table.columns.push_back(Column::create(SQLType::integer()));
     auto& vec = std::get<std::vector<int32_t>>(table.columns[0].storage);
     vec.push_back(10);
     vec.push_back(20);

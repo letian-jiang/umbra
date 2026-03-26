@@ -12,6 +12,7 @@ enum class SQLTypeId {
     BIGINT,   // int64_t
     DATE,     // int32_t (days since 2000-01-01)
     DECIMAL,  // int64_t (scaled integer)
+    CHAR,     // int8_t[n] (fixed-length, inline)
     VARCHAR,  // StringRef
     BOOLEAN,  // int8_t (internal predicates)
 };
@@ -27,6 +28,7 @@ struct SQLType {
     static SQLType bigint() { return {SQLTypeId::BIGINT}; }
     static SQLType date() { return {SQLTypeId::DATE}; }
     static SQLType decimal(uint8_t p, uint8_t s) { return {SQLTypeId::DECIMAL, p, s}; }
+    static SQLType fixedChar(uint16_t len) { return {SQLTypeId::CHAR, 0, 0, len}; }
     static SQLType varchar(uint16_t len) { return {SQLTypeId::VARCHAR, 0, 0, len}; }
     static SQLType boolean() { return {SQLTypeId::BOOLEAN}; }
 };
@@ -62,6 +64,8 @@ inline size_t typeSize(SQLTypeId id) {
             return sizeof(int32_t);
         case SQLTypeId::DECIMAL:
             return sizeof(int64_t);
+        case SQLTypeId::CHAR:
+            return sizeof(int8_t);
         case SQLTypeId::VARCHAR:
             return sizeof(StringValue);
         case SQLTypeId::BOOLEAN:

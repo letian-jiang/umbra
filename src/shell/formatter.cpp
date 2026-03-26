@@ -154,6 +154,18 @@ std::string formatValue(int64_t value, SQLType type) {
             return formatDecimal(value, type.scale);
         case SQLTypeId::DATE:
             return formatDate(static_cast<int32_t>(value));
+        case SQLTypeId::CHAR:
+            if (type.maxLen == 1) {
+                return {1, static_cast<char>(value)};
+            } else {
+                // CHAR(n>1): value is a pointer to the fixed-length data.
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
+                auto* ptr = reinterpret_cast<const char*>(static_cast<uintptr_t>(value));
+                if (ptr != nullptr) {
+                    return {ptr, type.maxLen};
+                }
+                return "(null)";
+            }
         case SQLTypeId::VARCHAR: {
             // The value is a packed StringValue (offset + length).
             // In the result collector, VARCHAR values are stored as raw int64_t.

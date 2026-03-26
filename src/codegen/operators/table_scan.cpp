@@ -73,12 +73,21 @@ void TableScanTranslator::produce(CompilationContext& ctx) {
             }
         }
 
-        auto irType = sqlTypeToIR(sqlType.id);
-        // GEP into the column array: colBase + i * elementSize.
-        auto elemPtr = Ptr<Int8>(bld.emitGEP(colBases[c].op(), irType, loopI.op()));
-        auto value = bld.emitLoad(irType, elemPtr.op());
+        auto irType = sqlTypeToIR(sqlType);
         auto notNull = cg.constBool(false);
-        tuple.emplace_back(value, notNull.op(), sqlType);
+        if (sqlType.id == SQLTypeId::CHAR && sqlType.maxLen > 1) {
+            // CHAR(n>1): manual stride (no IR type of size n).
+            auto stride = cg.constInt64(static_cast<int64_t>(sqlType.maxLen));
+            auto byteOff = Int64(bld.emitMul(ir::TypeId::INT64, loopI.op(), stride.op()));
+            auto elemPtr = Ptr<Int8>(bld.emitGEP(colBases[c].op(), ir::TypeId::INT8, byteOff.op()));
+            tuple.emplace_back(bld.emitBitcast(ir::TypeId::PTR, elemPtr.op()), notNull.op(),
+                               sqlType);
+        } else {
+            // Normal path: GEP with typed stride.
+            auto elemPtr = Ptr<Int8>(bld.emitGEP(colBases[c].op(), irType, loopI.op()));
+            auto value = bld.emitLoad(irType, elemPtr.op());
+            tuple.emplace_back(value, notNull.op(), sqlType);
+        }
     }
 
     // Apply filter predicate if present.

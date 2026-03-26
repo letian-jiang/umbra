@@ -26,12 +26,14 @@ static uint64_t run(Program& program, FunctionId func, std::vector<uint64_t> arg
 // ── SQL Type to IR mapping ──────────────────────────────────────────────────
 
 TEST_CASE("SQLValue: sqlTypeToIR mapping", "[sql_values]") {
-    REQUIRE(sqlTypeToIR(SQLTypeId::BOOLEAN) == TypeId::BOOL);
-    REQUIRE(sqlTypeToIR(SQLTypeId::INTEGER) == TypeId::INT32);
-    REQUIRE(sqlTypeToIR(SQLTypeId::DATE) == TypeId::INT32);
-    REQUIRE(sqlTypeToIR(SQLTypeId::BIGINT) == TypeId::INT64);
-    REQUIRE(sqlTypeToIR(SQLTypeId::DECIMAL) == TypeId::INT64);
-    REQUIRE(sqlTypeToIR(SQLTypeId::VARCHAR) == TypeId::PTR);
+    REQUIRE(sqlTypeToIR(SQLType::boolean()) == TypeId::BOOL);
+    REQUIRE(sqlTypeToIR(SQLType::integer()) == TypeId::INT32);
+    REQUIRE(sqlTypeToIR(SQLType::date()) == TypeId::INT32);
+    REQUIRE(sqlTypeToIR(SQLType::bigint()) == TypeId::INT64);
+    REQUIRE(sqlTypeToIR(SQLType::decimal(15, 2)) == TypeId::INT64);
+    REQUIRE(sqlTypeToIR(SQLType::fixedChar(1)) == TypeId::INT8);
+    REQUIRE(sqlTypeToIR(SQLType::fixedChar(10)) == TypeId::PTR);
+    REQUIRE(sqlTypeToIR(SQLType::varchar(10)) == TypeId::PTR);
 }
 
 // ── Non-null arithmetic ─────────────────────────────────────────────────────

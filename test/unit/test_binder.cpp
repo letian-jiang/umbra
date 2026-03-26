@@ -74,8 +74,8 @@ TEST_CASE("Bind TPC-H Q1", "[binder]") {
         auto* gr1 = static_cast<BoundGroupRef*>(proj->expressions[1]);
         REQUIRE(gr0->groupIndex == 0);
         REQUIRE(gr1->groupIndex == 1);
-        REQUIRE(gr0->resultType.id == SQLTypeId::VARCHAR);
-        REQUIRE(gr1->resultType.id == SQLTypeId::VARCHAR);
+        REQUIRE(gr0->resultType.id == SQLTypeId::CHAR);
+        REQUIRE(gr1->resultType.id == SQLTypeId::CHAR);
     }
 
     SECTION("Projection exprs 2-5 are AggRef (direct aggregates)") {
@@ -895,9 +895,9 @@ TEST_CASE("BoundPlanPrinter full plan output", "[binder]") {
 
 // ── Coverage: STRING literal in WHERE ───────────────────────────────────────
 
-TEST_CASE("Bind VARCHAR comparison with string literal", "[binder]") {
+TEST_CASE("Bind CHAR comparison with string literal", "[binder]") {
     auto cat = makeQ1Catalog();
-    // l_returnflag is VARCHAR(1), comparing with string literal
+    // l_returnflag is CHAR(1), comparing with string literal
     auto parseResult = Parser::parse("SELECT l_orderkey FROM lineitem WHERE l_returnflag = 'A'");
     REQUIRE(parseResult.stmt != nullptr);
 
@@ -910,11 +910,11 @@ TEST_CASE("Bind VARCHAR comparison with string literal", "[binder]") {
     auto* cmp = static_cast<BoundBinaryExpr*>(filter->predicate);
     REQUIRE(cmp->resultType.id == SQLTypeId::BOOLEAN);
 
-    // The string literal should be a BoundLiteral with VARCHAR type
+    // The string literal is converted to CHAR(1) with ASCII code
     REQUIRE(cmp->right->kind == BoundExprKind::LITERAL);
     auto* lit = static_cast<BoundLiteral*>(cmp->right);
-    REQUIRE(lit->resultType.id == SQLTypeId::VARCHAR);
-    REQUIRE(lit->strValue == "A");
+    REQUIRE(lit->resultType.id == SQLTypeId::CHAR);
+    REQUIRE(lit->intValue == 65);  // 'A' = 65
 }
 
 // ── Coverage: standalone DATE literal in SELECT (not via DateArith) ─────────
@@ -1056,9 +1056,9 @@ TEST_CASE("Bind ORDER BY DESC with GROUP BY", "[binder]") {
     REQUIRE(printed.find("DESC") != std::string::npos);
 }
 
-// ── Coverage: printer prints VARCHAR literal type ───────────────────────────
+// ── Coverage: printer prints CHAR literal type ──────────────────────────────
 
-TEST_CASE("BoundPlanPrinter prints VARCHAR literal", "[binder]") {
+TEST_CASE("BoundPlanPrinter prints CHAR literal", "[binder]") {
     auto cat = makeQ1Catalog();
     auto parseResult = Parser::parse("SELECT l_orderkey FROM lineitem WHERE l_returnflag = 'N'");
     Binder binder(cat);

@@ -53,6 +53,8 @@ std::string typeToString(SQLType type) {
         case SQLTypeId::DECIMAL:
             return "DECIMAL(" + std::to_string(type.precision) + "," + std::to_string(type.scale) +
                    ")";
+        case SQLTypeId::CHAR:
+            return "CHAR(" + std::to_string(type.maxLen) + ")";
         case SQLTypeId::VARCHAR:
             return "VARCHAR(" + std::to_string(type.maxLen) + ")";
         case SQLTypeId::BOOLEAN:

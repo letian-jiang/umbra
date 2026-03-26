@@ -39,7 +39,7 @@ Catalog makeQ1Catalog() {
         {"l_suppkey", SQLType::integer(), 2},       {"l_linenumber", SQLType::integer(), 3},
         {"l_quantity", SQLType::decimal(15, 2), 4}, {"l_extendedprice", SQLType::decimal(15, 2), 5},
         {"l_discount", SQLType::decimal(15, 2), 6}, {"l_tax", SQLType::decimal(15, 2), 7},
-        {"l_returnflag", SQLType::boolean(), 8},    {"l_linestatus", SQLType::boolean(), 9},
+        {"l_returnflag", SQLType::fixedChar(1), 8}, {"l_linestatus", SQLType::fixedChar(1), 9},
         {"l_shipdate", SQLType::date(), 10},
     };
     catalog.addTable(std::move(def));
@@ -54,51 +54,51 @@ Table makeQ1TestTable() {
 
     // Columns 0-3: placeholders (INTEGER).
     for (int c = 0; c < 4; ++c) {
-        Column col = Column::create(SQLTypeId::INTEGER);
+        Column col = Column::create(SQLType::integer());
         std::get<std::vector<int32_t>>(col.storage).resize(N, 0);
         table.columns.push_back(std::move(col));
     }
     // Column 4: l_quantity (DECIMAL scaled x100).
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         std::get<std::vector<int64_t>>(col.storage) = {1000, 2000, 3000, 1500, 2500,
                                                        4000, 1200, 5000, 1800, 2200};
         table.columns.push_back(std::move(col));
     }
     // Column 5: l_extendedprice.
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         std::get<std::vector<int64_t>>(col.storage) = {10000, 20000, 30000, 15000, 25000,
                                                        40000, 12000, 50000, 18000, 22000};
         table.columns.push_back(std::move(col));
     }
     // Column 6: l_discount.
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         std::get<std::vector<int64_t>>(col.storage) = {5, 10, 0, 5, 8, 0, 2, 3, 7, 6};
         table.columns.push_back(std::move(col));
     }
     // Column 7: l_tax.
     {
-        Column col = Column::create(SQLTypeId::DECIMAL);
+        Column col = Column::create(SQLType::decimal(15, 2));
         std::get<std::vector<int64_t>>(col.storage) = {8, 4, 2, 6, 3, 0, 1, 5, 4, 2};
         table.columns.push_back(std::move(col));
     }
-    // Column 8: l_returnflag (BOOLEAN/INT8 — ASCII).
+    // Column 8: l_returnflag (CHAR(1) — ASCII).
     {
-        Column col = Column::create(SQLTypeId::BOOLEAN);
+        Column col = Column::create(SQLType::fixedChar(1));
         std::get<std::vector<int8_t>>(col.storage) = {65, 65, 78, 78, 82, 65, 78, 82, 65, 78};
         table.columns.push_back(std::move(col));
     }
     // Column 9: l_linestatus.
     {
-        Column col = Column::create(SQLTypeId::BOOLEAN);
+        Column col = Column::create(SQLType::fixedChar(1));
         std::get<std::vector<int8_t>>(col.storage) = {70, 70, 79, 79, 70, 70, 79, 70, 70, 79};
         table.columns.push_back(std::move(col));
     }
     // Column 10: l_shipdate (days since 2000-01-01).
     {
-        Column col = Column::create(SQLTypeId::DATE);
+        Column col = Column::create(SQLType::date());
         std::get<std::vector<int32_t>>(col.storage) = {-519, -505, -550, -580, -611,
                                                        -488, -488, -500, -365, -365};
         table.columns.push_back(std::move(col));
