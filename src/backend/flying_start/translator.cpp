@@ -278,10 +278,15 @@ void FlyingStartCompiler::translateFunction(ir::Program& program, ir::FunctionId
                 ir::InstructionView inst(program.instBuffer().data(), instOff);
                 auto opcode = inst.opcode();
 
-                // Free same-block value operands at their last use.
+                // Return same-block value slots to the free pool at their last use,
+                // enabling subsequent allocations to reuse them. The location MAP
+                // entry is kept so code emission finds the correct slot offset.
                 ir::forEachValueArg(inst, [&](ir::IROp op) {
                     if (lsa_.isLastUse(op, preSeq) && lsa_.blockOf(op) == blockOff) {
-                        regAlloc_.removeLocation(op);
+                        const auto* loc = regAlloc_.getLocation(op);
+                        if (loc != nullptr && loc->kind == LocationKind::STACK) {
+                            regAlloc_.freeStackSlot(loc->stackOffset);
+                        }
                     }
                 });
 
@@ -764,6 +769,11 @@ void FlyingStartCompiler::translateCmp(ir::Program& /*program*/, const ir::Instr
                                        uint32_t instOff) {
     // Check if we can defer this comparison for fusion with condbr.
     if (canFuseComparisonBranch(*currentProgram_, lsa_, instOff)) {
+        // Return the pre-allocated stack slot before switching to DEFERRED.
+        const auto* prev = regAlloc_.getLocation(instOff);
+        if (prev != nullptr && prev->kind == LocationKind::STACK) {
+            regAlloc_.freeStackSlot(prev->stackOffset);
+        }
         ValueLocation loc;
         loc.kind = LocationKind::DEFERRED;
         loc.deferredOp = instOff;
