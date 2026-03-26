@@ -769,11 +769,9 @@ void FlyingStartCompiler::translateCmp(ir::Program& /*program*/, const ir::Instr
                                        uint32_t instOff) {
     // Check if we can defer this comparison for fusion with condbr.
     if (canFuseComparisonBranch(*currentProgram_, lsa_, instOff)) {
-        // Return the pre-allocated stack slot before switching to DEFERRED.
-        const auto* prev = regAlloc_.getLocation(instOff);
-        if (prev != nullptr && prev->kind == LocationKind::STACK) {
-            regAlloc_.freeStackSlot(prev->stackOffset);
-        }
+        // The pre-allocated stack slot was already returned to the free pool
+        // during the pre-allocation pass (at the comparison's last-use point).
+        // Just overwrite the location entry with DEFERRED.
         ValueLocation loc;
         loc.kind = LocationKind::DEFERRED;
         loc.deferredOp = instOff;
