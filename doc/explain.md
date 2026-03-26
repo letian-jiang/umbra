@@ -158,7 +158,7 @@ EXPLAIN ASM ...
 ```
 EXPLAIN PROFILE ...
 
-Profile:
+Profile (backend: flying-start):
                   plan    codegen  compile  execute  total
 Pipeline 0:       -       0.18ms   0.15ms   1.92ms   2.25ms
 Pipeline 1:       -       0.04ms   0.02ms   0.01ms   0.07ms

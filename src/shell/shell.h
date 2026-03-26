@@ -4,15 +4,17 @@
 #include <string>
 
 #include "catalog/catalog.h"
+#include "execution/pipeline.h"
 #include "storage/table.h"
 
 namespace umbra::shell {
 
 /// Shell configuration.
 struct ShellConfig {
-    bool interactive{true};    // Interactive REPL mode.
-    bool timerEnabled{false};  // Show timing after each query.
-    std::string dataDir{"."};  // Directory for .tbl files.
+    bool interactive{true};                                       // Interactive REPL mode.
+    bool timerEnabled{false};                                     // Show timing after each query.
+    std::string dataDir{"."};                                     // Directory for .tbl files.
+    execution::Backend backend{execution::Backend::INTERPRETER};  // Execution backend.
 };
 
 /// Interactive REPL for UmbraDB.

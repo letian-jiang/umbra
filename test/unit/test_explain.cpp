@@ -2,7 +2,10 @@
 #include <string>
 
 #include "catalog/catalog.h"
+#include "common/types.h"
+#include "execution/pipeline.h"
 #include "explain/explain.h"
+#include "storage/column.h"
 #include "storage/table.h"
 #include "storage/tbl_loader.h"
 
@@ -25,6 +28,99 @@ Table makeEmptyTable() {
     table.rowCount = 0;
     return table;
 }
+
+/// Q1-compatible catalog using BOOLEAN for char columns (matches test_q1.cpp).
+Catalog makeQ1Catalog() {
+    Catalog catalog;
+    TableDef def;
+    def.name = "lineitem";
+    def.columns = {
+        {"l_orderkey", SQLType::integer(), 0},      {"l_partkey", SQLType::integer(), 1},
+        {"l_suppkey", SQLType::integer(), 2},       {"l_linenumber", SQLType::integer(), 3},
+        {"l_quantity", SQLType::decimal(15, 2), 4}, {"l_extendedprice", SQLType::decimal(15, 2), 5},
+        {"l_discount", SQLType::decimal(15, 2), 6}, {"l_tax", SQLType::decimal(15, 2), 7},
+        {"l_returnflag", SQLType::boolean(), 8},    {"l_linestatus", SQLType::boolean(), 9},
+        {"l_shipdate", SQLType::date(), 10},
+    };
+    catalog.addTable(std::move(def));
+    return catalog;
+}
+
+/// Build a small test table with 10 rows (8 pass Q1 date filter).
+Table makeQ1TestTable() {
+    Table table;
+    table.name = "lineitem";
+    constexpr int N = 10;
+
+    // Columns 0-3: placeholders (INTEGER).
+    for (int c = 0; c < 4; ++c) {
+        Column col = Column::create(SQLTypeId::INTEGER);
+        std::get<std::vector<int32_t>>(col.storage).resize(N, 0);
+        table.columns.push_back(std::move(col));
+    }
+    // Column 4: l_quantity (DECIMAL scaled x100).
+    {
+        Column col = Column::create(SQLTypeId::DECIMAL);
+        std::get<std::vector<int64_t>>(col.storage) = {1000, 2000, 3000, 1500, 2500,
+                                                       4000, 1200, 5000, 1800, 2200};
+        table.columns.push_back(std::move(col));
+    }
+    // Column 5: l_extendedprice.
+    {
+        Column col = Column::create(SQLTypeId::DECIMAL);
+        std::get<std::vector<int64_t>>(col.storage) = {10000, 20000, 30000, 15000, 25000,
+                                                       40000, 12000, 50000, 18000, 22000};
+        table.columns.push_back(std::move(col));
+    }
+    // Column 6: l_discount.
+    {
+        Column col = Column::create(SQLTypeId::DECIMAL);
+        std::get<std::vector<int64_t>>(col.storage) = {5, 10, 0, 5, 8, 0, 2, 3, 7, 6};
+        table.columns.push_back(std::move(col));
+    }
+    // Column 7: l_tax.
+    {
+        Column col = Column::create(SQLTypeId::DECIMAL);
+        std::get<std::vector<int64_t>>(col.storage) = {8, 4, 2, 6, 3, 0, 1, 5, 4, 2};
+        table.columns.push_back(std::move(col));
+    }
+    // Column 8: l_returnflag (BOOLEAN/INT8 — ASCII).
+    {
+        Column col = Column::create(SQLTypeId::BOOLEAN);
+        std::get<std::vector<int8_t>>(col.storage) = {65, 65, 78, 78, 82, 65, 78, 82, 65, 78};
+        table.columns.push_back(std::move(col));
+    }
+    // Column 9: l_linestatus.
+    {
+        Column col = Column::create(SQLTypeId::BOOLEAN);
+        std::get<std::vector<int8_t>>(col.storage) = {70, 70, 79, 79, 70, 70, 79, 70, 70, 79};
+        table.columns.push_back(std::move(col));
+    }
+    // Column 10: l_shipdate (days since 2000-01-01).
+    {
+        Column col = Column::create(SQLTypeId::DATE);
+        std::get<std::vector<int32_t>>(col.storage) = {-519, -505, -550, -580, -611,
+                                                       -488, -488, -500, -365, -365};
+        table.columns.push_back(std::move(col));
+    }
+
+    table.rowCount = N;
+    table.finalize();
+    return table;
+}
+
+/// TPC-H Q1 SQL.
+const char* Q1_SQL =
+    "SELECT l_returnflag, l_linestatus, "
+    "SUM(l_quantity), SUM(l_extendedprice), "
+    "SUM(l_extendedprice * (1 - l_discount)), "
+    "SUM(l_extendedprice * (1 - l_discount) * (1 + l_tax)), "
+    "AVG(l_quantity), AVG(l_extendedprice), AVG(l_discount), "
+    "COUNT(*) "
+    "FROM lineitem "
+    "WHERE l_shipdate <= DATE '1998-12-01' - INTERVAL '90' DAY "
+    "GROUP BY l_returnflag, l_linestatus "
+    "ORDER BY l_returnflag, l_linestatus";
 
 }  // namespace
 
@@ -229,4 +325,55 @@ TEST_CASE("EXPLAIN ALL produces output from multiple stages", "[explain]") {
     REQUIRE(result.find("Physical Plan:") != std::string::npos);
     REQUIRE(result.find("Pipelines:") != std::string::npos);
     REQUIRE(result.find("IR:") != std::string::npos);
+}
+
+// ── EXPLAIN PROFILE with TPC-H Q1 ──────────────────────────────────────────
+
+TEST_CASE("EXPLAIN PROFILE Q1 — interpreter", "[explain][profile]") {
+    auto catalog = makeQ1Catalog();
+    auto table = makeQ1TestTable();
+
+    std::string result =
+        runExplain(ExplainLevel::PROFILE, Q1_SQL, catalog, table, execution::Backend::INTERPRETER);
+
+    // Must contain per-pipeline breakdown header and rows.
+    REQUIRE(result.find("Profile (backend: interpreter)") != std::string::npos);
+    REQUIRE(result.find("plan") != std::string::npos);
+    REQUIRE(result.find("codegen") != std::string::npos);
+    REQUIRE(result.find("compile") != std::string::npos);
+    REQUIRE(result.find("execute") != std::string::npos);
+    REQUIRE(result.find("Pipeline 0") != std::string::npos);
+    REQUIRE(result.find("Pipeline 1") != std::string::npos);
+    REQUIRE(result.find("Total:") != std::string::npos);
+    // Must show 3 result rows (A-F, N-O, R-F).
+    REQUIRE(result.find("Result: 3 rows") != std::string::npos);
+}
+
+TEST_CASE("EXPLAIN PROFILE Q1 — flying-start", "[explain][profile]") {
+    auto catalog = makeQ1Catalog();
+    auto table = makeQ1TestTable();
+
+    std::string result =
+        runExplain(ExplainLevel::PROFILE, Q1_SQL, catalog, table, execution::Backend::FLYING_START);
+
+    REQUIRE(result.find("Profile (backend: flying-start)") != std::string::npos);
+    REQUIRE(result.find("Pipeline 0") != std::string::npos);
+    REQUIRE(result.find("Pipeline 1") != std::string::npos);
+    REQUIRE(result.find("Total:") != std::string::npos);
+    REQUIRE(result.find("Result: 3 rows") != std::string::npos);
+}
+
+TEST_CASE("EXPLAIN PROFILE shows all explain stages before profile", "[explain][profile]") {
+    auto catalog = makeQ1Catalog();
+    auto table = makeQ1TestTable();
+
+    std::string result = runExplain(ExplainLevel::PROFILE, Q1_SQL, catalog, table);
+
+    // PROFILE shows AST, Logical, Physical, Pipeline, IR sections too.
+    REQUIRE(result.find("AST:") != std::string::npos);
+    REQUIRE(result.find("Logical Plan:") != std::string::npos);
+    REQUIRE(result.find("Physical Plan:") != std::string::npos);
+    REQUIRE(result.find("Pipelines:") != std::string::npos);
+    REQUIRE(result.find("IR:") != std::string::npos);
+    REQUIRE(result.find("Profile") != std::string::npos);
 }

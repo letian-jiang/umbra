@@ -11,6 +11,7 @@
 #include "common/types.h"
 #include "execution/pipeline.h"
 #include "execution/result_collector.h"
+#include "explain/explain.h"
 #include "optimizer/optimizer.h"
 #include "parser/parser.h"
 #include "storage/column.h"
@@ -271,4 +272,33 @@ TEST_CASE("Benchmark: Q1 phase breakdown", "[perf]") {
     CHECK(result.planMs < result.totalMs);
     // Codegen + execute should account for most of the time.
     CHECK(result.codegenAndExecuteMs <= result.totalMs * 1.1);  // small tolerance
+}
+
+TEST_CASE("Benchmark: EXPLAIN PROFILE Q1 SF=0.01", "[perf]") {
+    constexpr int NUM_ROWS = 60175;  // SF=0.01 lineitem row count.
+    auto catalog = makeBenchCatalog();
+    auto table = makeBenchTable(NUM_ROWS);
+
+    SECTION("interpreter") {
+        std::string output = explain::runExplain(explain::ExplainLevel::PROFILE, Q1_SQL, catalog,
+                                                 table, execution::Backend::INTERPRETER);
+        std::cerr << "\n=== EXPLAIN PROFILE Q1 (interpreter, " << NUM_ROWS << " rows) ===\n";
+        // Print only the Profile section.
+        auto pos = output.find("Profile");
+        if (pos != std::string::npos) {
+            std::cerr << output.substr(pos);
+        }
+        CHECK(output.find("Result:") != std::string::npos);
+    }
+
+    SECTION("flying-start") {
+        std::string output = explain::runExplain(explain::ExplainLevel::PROFILE, Q1_SQL, catalog,
+                                                 table, execution::Backend::FLYING_START);
+        std::cerr << "\n=== EXPLAIN PROFILE Q1 (flying-start, " << NUM_ROWS << " rows) ===\n";
+        auto pos = output.find("Profile");
+        if (pos != std::string::npos) {
+            std::cerr << output.substr(pos);
+        }
+        CHECK(output.find("Result:") != std::string::npos);
+    }
 }

@@ -47,6 +47,7 @@ TEST_CASE("Shell dot commands", "[shell]") {
         REQUIRE(result.find(".tables") != std::string::npos);
         REQUIRE(result.find(".schema") != std::string::npos);
         REQUIRE(result.find(".timer") != std::string::npos);
+        REQUIRE(result.find(".backend") != std::string::npos);
     }
 
     SECTION(".tables") {
@@ -87,6 +88,26 @@ TEST_CASE("Shell dot commands", "[shell]") {
 
     SECTION(".timer bad arg") {
         REQUIRE(shell.executeStatement(".timer bad", out, err));
+        REQUIRE(err.str().find("Usage") != std::string::npos);
+    }
+
+    SECTION(".backend show current") {
+        REQUIRE(shell.executeStatement(".backend", out, err));
+        REQUIRE(out.str().find("Current backend: interpreter") != std::string::npos);
+    }
+
+    SECTION(".backend flying-start") {
+        REQUIRE(shell.executeStatement(".backend flying-start", out, err));
+        REQUIRE(out.str().find("Backend set to: flying-start") != std::string::npos);
+    }
+
+    SECTION(".backend interpreter") {
+        REQUIRE(shell.executeStatement(".backend interpreter", out, err));
+        REQUIRE(out.str().find("Backend set to: interpreter") != std::string::npos);
+    }
+
+    SECTION(".backend bad arg") {
+        REQUIRE(shell.executeStatement(".backend bad", out, err));
         REQUIRE(err.str().find("Usage") != std::string::npos);
     }
 

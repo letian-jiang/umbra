@@ -1,12 +1,14 @@
 #include "execution/pipeline.h"
 
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
 #include <vector>
 
+#include "backend/flying_start/translator.h"
 #include "backend/interpreter/interpreter.h"
 #include "codegen/api/codegen_context.h"
 #include "codegen/operators/hash_aggregate.h"
@@ -22,9 +24,30 @@
 
 namespace umbra::execution {
 
+namespace {
+
+/// Helper: current time point.
+auto now() {
+    return std::chrono::high_resolution_clock::now();
+}
+
+/// Helper: elapsed milliseconds between two time points.
+double elapsedMs(std::chrono::high_resolution_clock::time_point start,
+                 std::chrono::high_resolution_clock::time_point end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+}  // namespace
+
+PipelineExecutor::PipelineExecutor(Backend backend) : backend_(backend) {}
+
 void PipelineExecutor::execute(const optimizer::OptimizeResult& result, Table& table,
                                ResultCollector& collector) {
     assert(result.pipelines.size() >= 2 && "Q1 must have at least 2 pipelines");
+
+    if (profiling_) {
+        profiles_.resize(2);
+    }
 
     // Pipeline 0: build side
     executeBuildPipeline(result, table);
@@ -71,7 +94,9 @@ void PipelineExecutor::executeBuildPipeline(const optimizer::OptimizeResult& res
     scanTranslator->setParent(hashAggTranslator_.get());
     hashAggTranslator_->setChild(scanTranslator.get());
 
-    // Generate IR for the build pipeline.
+    // ── Codegen phase: generate IR via Tidy Tuples ──────────────────────
+    auto codegenStart = now();
+
     codegen::CodegenContext cg;
     codegen::setActiveContext(&cg);
 
@@ -83,6 +108,11 @@ void PipelineExecutor::executeBuildPipeline(const optimizer::OptimizeResult& res
 
     cg.emitRetVoid();
 
+    auto codegenEnd = now();
+
+    // ── Compile phase: finalize IR (+ JIT for Flying Start) ─────────────
+    auto compileStart = now();
+
     auto program = cg.finalize();
 
     // Set up RuntimeContext.
@@ -93,14 +123,46 @@ void PipelineExecutor::executeBuildPipeline(const optimizer::OptimizeResult& res
     rtCtx.rowCount = table.rowCount;
     rtCtx.hashTable = hashAggTranslator_->hashTablePtr();
 
-    // Execute through interpreter.
-    interpreter::Interpreter interp;
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     auto ctxArg = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&rtCtx));
     std::vector<uint64_t> args = {ctxArg};
-    interp.execute(program, funcId, std::span<const uint64_t>(args));
+
+    // Compile + execute through selected backend.
+    // The FlyingStartCompiler must stay alive through execution (it owns JIT'd code).
+    flying_start::FlyingStartCompiler jitCompiler;
+    void* jitFunc = nullptr;
+
+    if (backend_ == Backend::FLYING_START) {
+        jitFunc = jitCompiler.compile(program, funcId);
+    }
+
+    auto compileEnd = now();
+
+    // ── Execute phase ───────────────────────────────────────────────────
+    auto execStart = now();
+
+    switch (backend_) {
+        case Backend::INTERPRETER: {
+            interpreter::Interpreter interp;
+            interp.execute(program, funcId, std::span<const uint64_t>(args));
+            break;
+        }
+        case Backend::FLYING_START: {
+            flying_start::FlyingStartCompiler::execute(jitFunc, std::span<const uint64_t>(args));
+            break;
+        }
+    }
+
+    auto execEnd = now();
 
     codegen::setActiveContext(nullptr);
+
+    // Record profiling data.
+    if (profiling_) {
+        profiles_[0].codegenMs = elapsedMs(codegenStart, codegenEnd);
+        profiles_[0].compileMs = elapsedMs(compileStart, compileEnd);
+        profiles_[0].executeMs = elapsedMs(execStart, execEnd);
+    }
 }
 
 void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& result, Table& table,
@@ -171,7 +233,9 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
         projTranslator->setChild(nullptr);  // Hash agg scan drives produce.
     }
 
-    // Generate IR for the scan pipeline.
+    // ── Codegen phase: generate IR via Tidy Tuples ──────────────────────
+    auto codegenStart = now();
+
     codegen::CodegenContext cg;
     codegen::setActiveContext(&cg);
 
@@ -182,6 +246,11 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
     hashAggTranslator_->produceScan(ctx);
 
     cg.emitRetVoid();
+
+    auto codegenEnd = now();
+
+    // ── Compile phase: finalize IR (+ JIT for Flying Start) ─────────────
+    auto compileStart = now();
 
     auto program = cg.finalize();
 
@@ -195,12 +264,37 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
     rtCtx.resultBuffer = reinterpret_cast<void*>(collector.buffer());
     rtCtx.resultRowCount = 0;
 
-    // Execute through interpreter.
-    interpreter::Interpreter interp;
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     auto ctxArg = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&rtCtx));
     std::vector<uint64_t> args = {ctxArg};
-    interp.execute(program, funcId, std::span<const uint64_t>(args));
+
+    // Compile + execute through selected backend.
+    // The FlyingStartCompiler must stay alive through execution (it owns JIT'd code).
+    flying_start::FlyingStartCompiler jitCompiler;
+    void* jitFunc = nullptr;
+
+    if (backend_ == Backend::FLYING_START) {
+        jitFunc = jitCompiler.compile(program, funcId);
+    }
+
+    auto compileEnd = now();
+
+    // ── Execute phase ───────────────────────────────────────────────────
+    auto execStart = now();
+
+    switch (backend_) {
+        case Backend::INTERPRETER: {
+            interpreter::Interpreter interp;
+            interp.execute(program, funcId, std::span<const uint64_t>(args));
+            break;
+        }
+        case Backend::FLYING_START: {
+            flying_start::FlyingStartCompiler::execute(jitFunc, std::span<const uint64_t>(args));
+            break;
+        }
+    }
+
+    auto execEnd = now();
 
     // Materialize results.
     collector.materialize(rtCtx.resultRowCount);
@@ -225,6 +319,13 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
     }
 
     codegen::setActiveContext(nullptr);
+
+    // Record profiling data.
+    if (profiling_) {
+        profiles_[1].codegenMs = elapsedMs(codegenStart, codegenEnd);
+        profiles_[1].compileMs = elapsedMs(compileStart, compileEnd);
+        profiles_[1].executeMs = elapsedMs(execStart, execEnd);
+    }
 }
 
 const optimizer::PhysicalOperator* PipelineExecutor::findOperator(
