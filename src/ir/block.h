@@ -46,6 +46,9 @@ class BlockView {
         }
 
         bool operator!=(const Iterator& other) const {
+            if (atEnd_ && other.atEnd_) {
+                return false;
+            }
             return atEnd_ != other.atEnd_ || pos_ != other.pos_;
         }
 

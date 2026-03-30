@@ -174,18 +174,34 @@ bool Shell::executeDotCommand(const std::string& cmd, std::ostream& out, std::os
     if (lower.starts_with(".backend")) {
         std::string arg = trim(lower.substr(8));
         if (arg.empty()) {
-            out << "Current backend: "
-                << (config_.backend == execution::Backend::INTERPRETER ? "interpreter"
-                                                                       : "flying-start")
-                << "\n";
+            std::string name;
+            switch (config_.backend) {
+                case execution::Backend::INTERPRETER:
+                    name = "interpreter";
+                    break;
+                case execution::Backend::FLYING_START:
+                    name = "flying-start";
+                    break;
+                case execution::Backend::LLVM:
+                    name = "llvm";
+                    break;
+            }
+            out << "Current backend: " << name << "\n";
         } else if (arg == "interpreter") {
             config_.backend = execution::Backend::INTERPRETER;
             out << "Backend set to: interpreter\n";
         } else if (arg == "flying-start") {
             config_.backend = execution::Backend::FLYING_START;
             out << "Backend set to: flying-start\n";
+        } else if (arg == "llvm") {
+#ifdef UMBRA_LLVM_BACKEND
+            config_.backend = execution::Backend::LLVM;
+            out << "Backend set to: llvm\n";
+#else
+            err << "LLVM backend not compiled. Rebuild with -DLLVM_BACKEND=ON\n";
+#endif
         } else {
-            err << "Usage: .backend [interpreter|flying-start]\n";
+            err << "Usage: .backend [interpreter|flying-start|llvm]\n";
         }
         return true;
     }
