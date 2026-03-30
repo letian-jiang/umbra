@@ -279,30 +279,42 @@ br i1 %ovf, label %overflow_bb, label %cont_bb
 
 ### 4.10 Host Function Calls
 
-通过 C trampoline 调用 `std::function`：
+三级调用策略，参考论文 §2.6 Host Language Integration（详见 `doc/inline-host-functions.md`）：
 
-```cpp
-// 定义在 llvm_compiler.cpp
-extern "C" uint64_t umbraCallHost(void* hostFunc, const uint64_t* args, uint8_t count);
-```
+**Legacy trampoline（无 directPtr 的 host function）**
 
-Lowering 步骤：
-
-1. 将 `HostFunction*` 地址嵌入为常量 `inttoptr(i64 addr to i8*)`
-2. 在函数入口 `alloca [N x i64]` 存放参数（避免循环内 stack 增长）
-3. Store 每个参数到 alloca array
-4. 调用 trampoline `umbraCallHost(hostPtr, argsArray, count)`
+通过 C trampoline 调用 `std::function`，用于未提供 `extern "C"` 包装的函数：
 
 ```llvm
-; 调用 host function (2 params)
-%hostPtr = inttoptr i64 <addr> to i8*
-%args = alloca [2 x i64]
-store i64 %arg0, [2 x i64]* %args, 0
-store i64 %arg1, [2 x i64]* %args, 1
 %result = call i64 @umbraCallHost(i8* %hostPtr, i64* %args, i8 2)
 ```
 
-Trampoline 注册为 LLJIT absolute symbol，LLJIT 在链接时解析。
+**Direct C ABI call（`directPtr != nullptr && !inlineable`）**
+
+直接声明 + 调用 `extern "C"` 函数，消除 trampoline 和参数序列化：
+
+```llvm
+declare i8* @umbra_ht_insert(i8*, i64)
+%result = call i8* @umbra_ht_insert(i8* %table, i64 %hash)
+```
+
+函数地址注册为 LLJIT absolute symbol。
+
+**Inline（`directPtr != nullptr && inlineable`）**
+
+函数体来自预编译 LLVM bitcode（`host_inline.cpp` → `.bc` → 嵌入二进制）。在 O3 优化前链接到 JIT 模块，标记 `alwaysinline`。LLVM inliner 将函数体展开到调用点：
+
+```llvm
+; 内联前: call i8* @umbra_ht_lookup(i8* %table, i64 %hash)
+; 内联后: probe loop 直接展开在调用点，LICM 可提升 capacity/slots load
+```
+
+| 函数 | 策略 | 理由 |
+|------|------|------|
+| `ht_lookup` | Inline | 热路径（~60K/query），函数体小 |
+| `ht_probe_next` | Inline | 与 lookup 结构相同 |
+| `ht_insert` | Direct call | 含 resize（malloc），体积大，频率低 |
+| `ht_capacity/slot_buffer/slot_stride` | Direct call | 频率极低（1/query） |
 
 ### 4.11 DB-Specific
 
@@ -421,8 +433,12 @@ Total:           0.20ms   0.02ms   18.01ms  0.57ms   18.80ms
 | 文件 | 内容 |
 |------|------|
 | `src/backend/llvm/llvm_compiler.h` | `LLVMCompiler` 类声明（pimpl 隐藏 LLVM 类型） |
-| `src/backend/llvm/llvm_compiler.cpp` | Lowering + O3 优化 + LLJIT 编译执行（全部 LLVM 依赖仅此文件） |
-| `test/ir/test_llvm_backend.cpp` | 三后端交叉验证测试 |
+| `src/backend/llvm/llvm_compiler.cpp` | Lowering + O3 优化 + bitcode 链接 + LLJIT 编译执行 |
+| `src/backend/llvm/host_functions_c.h/.cpp` | `extern "C"` host function 包装（Direct C ABI call） |
+| `src/backend/llvm/host_inline.cpp` | Inlineable 函数实现（编译为 LLVM bitcode 嵌入） |
+| `src/backend/llvm/host_inline_bitcode.h` | 嵌入的 bitcode 数组 |
+| `src/codegen/structures/hash_table_layout.h` | HashTable POD 内存布局（bitcode 与运行时共享） |
+| `test/ir/test_llvm_backend.cpp` | 三后端交叉验证 + direct call + inline 验证测试 |
 
 `LLVMCompiler` 使用 pimpl 模式将所有 LLVM 类型隐藏在 `Impl` 结构体中，header 不引入任何 LLVM 头文件。
 
@@ -435,9 +451,11 @@ Total:           0.20ms   0.02ms   18.01ms  0.57ms   18.80ms
 | 全部 60 opcodes lowering | **已实现** | 所有指令类型完整支持 |
 | LLVM O3 优化 | **已实现** | New Pass Manager |
 | ORC JIT (LLJIT) | **已实现** | 包含 host function absolute symbol 注册 |
+| Direct C ABI call | **已实现** | 消除 trampoline + 参数序列化（论文 §2.6） |
+| Inline host functions | **已实现** | 嵌入 bitcode + alwaysinline（ht_lookup/probe_next） |
 | CMake 可选编译 | **已实现** | `LLVM_BACKEND=ON/OFF` |
 | Shell `.backend llvm` | **已实现** | |
 | EXPLAIN ASM/PROFILE | **已实现** | |
-| 单元测试 (12 cases) | **通过** | 三后端交叉验证 |
+| 单元测试 (16 cases) | **通过** | 三后端交叉验证 + direct call + inline 验证 |
 | TPC-H Q1 端到端 | **通过** | 三后端交叉验证结果一致 |
 | Adaptive execution | 不实现 | MVP 启动时选择 backend |

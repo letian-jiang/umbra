@@ -3,6 +3,10 @@
 #include <cassert>
 #include <cstring>
 
+#ifdef UMBRA_LLVM_BACKEND
+#include "backend/llvm/host_functions_c.h"
+#endif
+
 namespace umbra::codegen {
 
 // ── HashTable (runtime) ─────────────────────────────────────────────────────
@@ -209,6 +213,29 @@ HashTableCodegen::HashTableCodegen(const std::vector<SQLType>& keyTypes,
     : keyLayout_(keyTypes), aggLayout_(aggTypes) {}
 
 void HashTableCodegen::registerHostFunctions(CodegenContext& ctx) {
+#ifdef UMBRA_LLVM_BACKEND
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast)
+    lookupFn_ = ctx.registerHostFunction("ht_lookup", HashTable::hostLookup, ir::TypeId::PTR,
+                                         {ir::TypeId::PTR, ir::TypeId::UINT64},
+                                         reinterpret_cast<void*>(&umbra_ht_lookup), true);
+    insertFn_ = ctx.registerHostFunction("ht_insert", HashTable::hostInsert, ir::TypeId::PTR,
+                                         {ir::TypeId::PTR, ir::TypeId::UINT64},
+                                         reinterpret_cast<void*>(&umbra_ht_insert), false);
+    probeNextFn_ =
+        ctx.registerHostFunction("ht_probe_next", HashTable::hostProbeNext, ir::TypeId::PTR,
+                                 {ir::TypeId::PTR, ir::TypeId::PTR, ir::TypeId::UINT64},
+                                 reinterpret_cast<void*>(&umbra_ht_probe_next), true);
+    getCapacityFn_ = ctx.registerHostFunction(
+        "ht_capacity", HashTable::hostGetCapacity, ir::TypeId::UINT64, {ir::TypeId::PTR},
+        reinterpret_cast<void*>(&umbra_ht_get_capacity), false);
+    getSlotBufferFn_ = ctx.registerHostFunction(
+        "ht_slot_buffer", HashTable::hostGetSlotBuffer, ir::TypeId::PTR, {ir::TypeId::PTR},
+        reinterpret_cast<void*>(&umbra_ht_get_slot_buffer), false);
+    getSlotStrideFn_ = ctx.registerHostFunction(
+        "ht_slot_stride", HashTable::hostGetSlotStride, ir::TypeId::UINT64, {ir::TypeId::PTR},
+        reinterpret_cast<void*>(&umbra_ht_get_slot_stride), false);
+    // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+#else
     lookupFn_ = ctx.registerHostFunction("ht_lookup", HashTable::hostLookup, ir::TypeId::PTR,
                                          {ir::TypeId::PTR, ir::TypeId::UINT64});
     insertFn_ = ctx.registerHostFunction("ht_insert", HashTable::hostInsert, ir::TypeId::PTR,
@@ -222,6 +249,7 @@ void HashTableCodegen::registerHostFunctions(CodegenContext& ctx) {
                                                 ir::TypeId::PTR, {ir::TypeId::PTR});
     getSlotStrideFn_ = ctx.registerHostFunction("ht_slot_stride", HashTable::hostGetSlotStride,
                                                 ir::TypeId::UINT64, {ir::TypeId::PTR});
+#endif
 }
 
 Bool HashTableCodegen::emitKeyComparison(CodegenContext& ctx, const std::vector<SQLValue>& stored,

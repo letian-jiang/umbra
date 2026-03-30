@@ -21,6 +21,7 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #pragma GCC diagnostic ignored "-Wcomment"
+#include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
@@ -34,10 +35,14 @@
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Value.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/Linker/Linker.h>
 #include <llvm/Passes/PassBuilder.h>
+#include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
 #pragma GCC diagnostic pop
+
+#include "backend/llvm/host_inline_bitcode.h"
 
 namespace umbra::llvm_backend {
 
@@ -79,18 +84,29 @@ struct LLVMCompiler::Impl {
     // ── Lowering ────────────────────────────────────────────────────────
 
     std::unique_ptr<llvm::Module> lowerToLLVM(ir::Program& prog, ir::FunctionId funcId,
-                                               llvm::LLVMContext& llvmCtx);
+                                              llvm::LLVMContext& llvmCtx);
     void discoverBlocks(ir::Program& prog, uint32_t entryBlockOff);
     void createPhiNodes(ir::Program& prog, uint32_t blockOff);
     void translateBlock(ir::Program& prog, uint32_t blockOff);
     void translateInstruction(ir::Program& prog, const ir::InstructionView& inst, uint32_t instOff);
     void populatePhiIncomings(ir::Program& prog);
 
+    // ── Inline host functions ───────────────────────────────────────────
+
+    /// Link embedded bitcode module (for inlineable functions) into the JIT module.
+    void linkInlineBitcode(llvm::Module& targetModule, llvm::LLVMContext& llvmCtx);
+
+    /// Check if any host function in the program is marked inlineable.
+    static bool hasInlineableFunctions(const ir::Program& prog);
+
     // ── Helpers ──────────────────────────────────────────────────────────
 
     llvm::Type* toLLVMType(ir::TypeId type);
     llvm::Value* getValue(ir::IROp op);
     void setValue(ir::IROp op, llvm::Value* val);
+
+    /// Coerce an LLVM value to the expected type (int↔ptr, width changes).
+    llvm::Value* coerceArg(llvm::Value* val, llvm::Type* expectedTy);
 };
 
 // ── Constructor / Destructor ────────────────────────────────────────────────
@@ -131,8 +147,7 @@ uint64_t LLVMCompiler::execute(void* funcPtr, std::span<const uint64_t> args) {
                                                     args[4]);
         }
         case 6: {
-            using FnPtr =
-                uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+            using FnPtr = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
             return reinterpret_cast<FnPtr>(funcPtr)(args[0], args[1], args[2],  // NOLINT
                                                     args[3], args[4], args[5]);
         }
@@ -143,7 +158,7 @@ uint64_t LLVMCompiler::execute(void* funcPtr, std::span<const uint64_t> args) {
 }
 
 uint64_t LLVMCompiler::compileAndExecute(ir::Program& program, ir::FunctionId func,
-                                          std::span<const uint64_t> args) {
+                                         std::span<const uint64_t> args) {
     void* ptr = compile(program, func);
     return execute(ptr, args);
 }
@@ -156,14 +171,19 @@ void* LLVMCompiler::compile(ir::Program& program, ir::FunctionId func) {
 }
 
 void* LLVMCompiler::compileWithLog(ir::Program& program, ir::FunctionId func,
-                                    std::string& llvmIrOutput) {
+                                   std::string& llvmIrOutput) {
     // 1. Create LLVM context + module.
     auto llvmCtx = std::make_unique<llvm::LLVMContext>();
 
     // 2. Lower Umbra IR → LLVM IR.
     auto mod = impl_->lowerToLLVM(program, func, *llvmCtx);
 
-    // 3. Verify the module.
+    // 3. Link inline bitcode for functions marked as inlineable.
+    if (Impl::hasInlineableFunctions(program)) {
+        impl_->linkInlineBitcode(*mod, *llvmCtx);
+    }
+
+    // 4. Verify the module.
     std::string verifyErr;
     llvm::raw_string_ostream verifyStream(verifyErr);
     if (llvm::verifyModule(*mod, &verifyStream)) {
@@ -171,7 +191,7 @@ void* LLVMCompiler::compileWithLog(ir::Program& program, ir::FunctionId func,
         throw std::runtime_error("LLVM IR verification failed: " + verifyErr);
     }
 
-    // 4. Optimize with O3.
+    // 5. Optimize with O3 (the inliner will inline alwaysinline functions).
     {
         llvm::LoopAnalysisManager lam;
         llvm::FunctionAnalysisManager fam;
@@ -190,7 +210,7 @@ void* LLVMCompiler::compileWithLog(ir::Program& program, ir::FunctionId func,
         mpm.run(*mod, mam);
     }
 
-    // 4b. Capture IR text (before optimization for debugging, after for output).
+    // 5b. Capture IR text (after optimization).
     {
         llvm::raw_string_ostream irStream(llvmIrOutput);
         mod->print(irStream, nullptr);
@@ -202,19 +222,31 @@ void* LLVMCompiler::compileWithLog(ir::Program& program, ir::FunctionId func,
         mod->dump();
     }
 
-    // 5. Create LLJIT and compile.
+    // 6. Create LLJIT and compile.
     auto jitExpected = llvm::orc::LLJITBuilder().create();
     if (!jitExpected) {
         throw std::runtime_error("Failed to create LLJIT");
     }
     impl_->jit = std::move(*jitExpected);
 
-    // Register the host-call trampoline as an absolute symbol.
+    // Register absolute symbols: trampoline + direct C ABI functions.
     auto& mainJD = impl_->jit->getMainJITDylib();
     llvm::orc::SymbolMap symbols;
-    symbols[impl_->jit->mangleAndIntern("umbraCallHost")] = llvm::JITEvaluatedSymbol(
-        llvm::pointerToJITTargetAddress(&umbraCallHost),
-        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable);
+    symbols[impl_->jit->mangleAndIntern("umbraCallHost")] =
+        llvm::JITEvaluatedSymbol(llvm::pointerToJITTargetAddress(&umbraCallHost),
+                                 llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable);
+
+    // Register direct host function symbols (for non-inlined direct calls).
+    for (uint32_t fid = 0; fid < program.numFunctions(); ++fid) {
+        const auto& meta = program.functionMeta(fid);
+        if (meta.directPtr != nullptr && !meta.inlineable) {
+            std::string sym = "umbra_" + meta.name;
+            symbols[impl_->jit->mangleAndIntern(sym)] = llvm::JITEvaluatedSymbol(
+                llvm::pointerToJITTargetAddress(meta.directPtr),
+                llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable);
+        }
+    }
+
     if (auto err = mainJD.define(llvm::orc::absoluteSymbols(std::move(symbols)))) {
         throw std::runtime_error("Failed to register absolute symbols");
     }
@@ -239,8 +271,8 @@ void* LLVMCompiler::compileWithLog(ir::Program& program, ir::FunctionId func,
 // ── lowerToLLVM ─────────────────────────────────────────────────────────────
 
 std::unique_ptr<llvm::Module> LLVMCompiler::Impl::lowerToLLVM(ir::Program& prog,
-                                                                ir::FunctionId funcId,
-                                                                llvm::LLVMContext& llvmCtx) {
+                                                              ir::FunctionId funcId,
+                                                              llvm::LLVMContext& llvmCtx) {
     blockMap.clear();
     valueMap.clear();
     rpoOrder.clear();
@@ -338,7 +370,7 @@ void LLVMCompiler::Impl::discoverBlocks(ir::Program& prog, uint32_t entryBlockOf
                     stk.push({trueBB, false});
                 }
             } else if (opcode == ir::Opcode::CHECKED_ADD || opcode == ir::Opcode::CHECKED_SUB ||
-                        opcode == ir::Opcode::CHECKED_MUL) {
+                       opcode == ir::Opcode::CHECKED_MUL) {
                 uint32_t contBB = terminator.arg(2);
                 uint32_t ovfBB = terminator.arg(3);
                 if (visited.insert(ovfBB).second) {
@@ -427,9 +459,8 @@ void LLVMCompiler::Impl::populatePhiIncomings(ir::Program& prog) {
 
 // ── Instruction translation ─────────────────────────────────────────────────
 
-void LLVMCompiler::Impl::translateInstruction(ir::Program& prog,
-                                               const ir::InstructionView& inst,
-                                               uint32_t instOff) {
+void LLVMCompiler::Impl::translateInstruction(ir::Program& prog, const ir::InstructionView& inst,
+                                              uint32_t instOff) {
     using Op = ir::Opcode;
     auto opcode = inst.opcode();
     auto type = inst.type();
@@ -533,14 +564,16 @@ void LLVMCompiler::Impl::translateInstruction(ir::Program& prog,
         case Op::ROTL: {
             llvm::Value* val = getValue(inst.arg(0));
             llvm::Value* shamt = getValue(inst.arg(1));
-            auto* fshl = llvm::Intrinsic::getDeclaration(mod, llvm::Intrinsic::fshl, {val->getType()});
+            auto* fshl =
+                llvm::Intrinsic::getDeclaration(mod, llvm::Intrinsic::fshl, {val->getType()});
             setValue(instOff, bld->CreateCall(fshl, {val, val, shamt}));
             break;
         }
         case Op::ROTR: {
             llvm::Value* val = getValue(inst.arg(0));
             llvm::Value* shamt = getValue(inst.arg(1));
-            auto* fshr = llvm::Intrinsic::getDeclaration(mod, llvm::Intrinsic::fshr, {val->getType()});
+            auto* fshr =
+                llvm::Intrinsic::getDeclaration(mod, llvm::Intrinsic::fshr, {val->getType()});
             setValue(instOff, bld->CreateCall(fshr, {val, val, shamt}));
             break;
         }
@@ -560,13 +593,26 @@ void LLVMCompiler::Impl::translateInstruction(ir::Program& prog,
 
             llvm::CmpInst::Predicate pred;
             switch (opcode) {
-                case Op::CMP_EQ: pred = llvm::CmpInst::ICMP_EQ; break;
-                case Op::CMP_NE: pred = llvm::CmpInst::ICMP_NE; break;
-                case Op::CMP_LT: pred = isUnsigned ? llvm::CmpInst::ICMP_ULT : llvm::CmpInst::ICMP_SLT; break;
-                case Op::CMP_LE: pred = isUnsigned ? llvm::CmpInst::ICMP_ULE : llvm::CmpInst::ICMP_SLE; break;
-                case Op::CMP_GT: pred = isUnsigned ? llvm::CmpInst::ICMP_UGT : llvm::CmpInst::ICMP_SGT; break;
-                case Op::CMP_GE: pred = isUnsigned ? llvm::CmpInst::ICMP_UGE : llvm::CmpInst::ICMP_SGE; break;
-                default: __builtin_unreachable();
+                case Op::CMP_EQ:
+                    pred = llvm::CmpInst::ICMP_EQ;
+                    break;
+                case Op::CMP_NE:
+                    pred = llvm::CmpInst::ICMP_NE;
+                    break;
+                case Op::CMP_LT:
+                    pred = isUnsigned ? llvm::CmpInst::ICMP_ULT : llvm::CmpInst::ICMP_SLT;
+                    break;
+                case Op::CMP_LE:
+                    pred = isUnsigned ? llvm::CmpInst::ICMP_ULE : llvm::CmpInst::ICMP_SLE;
+                    break;
+                case Op::CMP_GT:
+                    pred = isUnsigned ? llvm::CmpInst::ICMP_UGT : llvm::CmpInst::ICMP_SGT;
+                    break;
+                case Op::CMP_GE:
+                    pred = isUnsigned ? llvm::CmpInst::ICMP_UGE : llvm::CmpInst::ICMP_SGE;
+                    break;
+                default:
+                    __builtin_unreachable();
             }
             setValue(instOff, bld->CreateZExt(bld->CreateICmp(pred, lhs, rhs), i8Ty));
             break;
@@ -576,8 +622,8 @@ void LLVMCompiler::Impl::translateInstruction(ir::Program& prog,
         case Op::LNOT: {
             llvm::Value* val = getValue(inst.arg(0));
             setValue(instOff,
-                     bld->CreateZExt(bld->CreateICmpEQ(val, llvm::ConstantInt::get(val->getType(), 0)),
-                                     i8Ty));
+                     bld->CreateZExt(
+                         bld->CreateICmpEQ(val, llvm::ConstantInt::get(val->getType(), 0)), i8Ty));
             break;
         }
         case Op::LAND:
@@ -588,8 +634,10 @@ void LLVMCompiler::Impl::translateInstruction(ir::Program& prog,
             break;
         case Op::SELECT: {
             llvm::Value* cond = getValue(inst.arg(0));
-            llvm::Value* condBool = bld->CreateICmpNE(cond, llvm::ConstantInt::get(cond->getType(), 0));
-            setValue(instOff, bld->CreateSelect(condBool, getValue(inst.arg(1)), getValue(inst.arg(2))));
+            llvm::Value* condBool =
+                bld->CreateICmpNE(cond, llvm::ConstantInt::get(cond->getType(), 0));
+            setValue(instOff,
+                     bld->CreateSelect(condBool, getValue(inst.arg(1)), getValue(inst.arg(2))));
             break;
         }
 
@@ -643,7 +691,8 @@ void LLVMCompiler::Impl::translateInstruction(ir::Program& prog,
             llvm::Type* elemTy = toLLVMType(type);
             auto* ptrTy = llvm::PointerType::get(elemTy, 0);
             llvm::Value* typedBase = bld->CreateBitCast(base, ptrTy);
-            setValue(instOff, bld->CreateBitCast(bld->CreateGEP(elemTy, typedBase, index), i8PtrTy));
+            setValue(instOff,
+                     bld->CreateBitCast(bld->CreateGEP(elemTy, typedBase, index), i8PtrTy));
             break;
         }
 
@@ -691,52 +740,84 @@ void LLVMCompiler::Impl::translateInstruction(ir::Program& prog,
         case Op::CALL6: {
             ir::FunctionId calleeId = inst.arg(0);
             uint8_t numParams = ir::callParamCount(opcode);
+            const auto& calleeMeta = prog.functionMeta(calleeId);
 
-            const ir::HostFunction* hostFunc = prog.hostFunction(calleeId);
-            assert(hostFunc != nullptr && "Only host function calls supported");
+            llvm::Value* result = nullptr;
 
-            // Embed HostFunction* address.
-            auto hostAddr = static_cast<uint64_t>(
-                reinterpret_cast<uintptr_t>(hostFunc));  // NOLINT
-            llvm::Value* hostPtr = bld->CreateIntToPtr(llvm::ConstantInt::get(i64Ty, hostAddr), i8PtrTy);
-
-            // Build args array on stack (alloca in entry block to avoid stack growth in loops).
-            llvm::IRBuilder<> entryBuilder(&func->getEntryBlock(),
-                                           func->getEntryBlock().getFirstInsertionPt());
-            llvm::Value* argsAlloca = entryBuilder.CreateAlloca(
-                i64Ty, llvm::ConstantInt::get(i32Ty, std::max(uint8_t(1), numParams)));
-            for (uint8_t i = 0; i < numParams; ++i) {
-                llvm::Value* argVal = getValue(inst.arg(1 + i));
-                if (argVal->getType() != i64Ty) {
-                    if (argVal->getType()->isPointerTy()) {
-                        argVal = bld->CreatePtrToInt(argVal, i64Ty);
-                    } else if (argVal->getType()->isIntegerTy()) {
-                        // Zero-extend: interpreter TRUNC masks to dstBits,
-                        // Flying Start TRUNC uses movzx — both zero-extend.
-                        argVal = bld->CreateZExt(argVal, i64Ty);
-                    }
+            if (calleeMeta.directPtr != nullptr) {
+                // ── Direct C ABI call (Level 1 / Level 2) ──────────────
+                // Build the LLVM function type from the actual parameter types.
+                std::vector<llvm::Type*> paramTys;
+                paramTys.reserve(calleeMeta.paramTypes.size());
+                for (auto pty : calleeMeta.paramTypes) {
+                    paramTys.push_back(toLLVMType(pty));
                 }
-                bld->CreateStore(argVal, bld->CreateGEP(i64Ty, argsAlloca,
-                                                        llvm::ConstantInt::get(i32Ty, i)));
+                llvm::Type* retTy = (calleeMeta.returnType == ir::TypeId::VOID)
+                                        ? llvm::Type::getVoidTy(*ctx)
+                                        : toLLVMType(calleeMeta.returnType);
+                auto* fnTy = llvm::FunctionType::get(retTy, paramTys, false);
+
+                // Declare (or reuse) the function.  For inlineable functions the
+                // definition comes from linked bitcode; for others, LLJIT resolves
+                // the symbol from the absolute-symbol table.
+                std::string sym = "umbra_" + calleeMeta.name;
+                llvm::FunctionCallee callee = mod->getOrInsertFunction(sym, fnTy);
+
+                // Prepare arguments with proper type coercion.
+                std::vector<llvm::Value*> args;
+                args.reserve(numParams);
+                for (uint8_t i = 0; i < numParams; ++i) {
+                    llvm::Value* argVal = getValue(inst.arg(1 + i));
+                    args.push_back(coerceArg(argVal, paramTys[i]));
+                }
+
+                result = bld->CreateCall(callee, args);
+            } else {
+                // ── Legacy trampoline path ─────────────────────────────
+                const ir::HostFunction* hostFunc = prog.hostFunction(calleeId);
+                assert(hostFunc != nullptr && "Only host function calls supported");
+
+                auto hostAddr =
+                    static_cast<uint64_t>(reinterpret_cast<uintptr_t>(hostFunc));  // NOLINT
+                llvm::Value* hostPtr =
+                    bld->CreateIntToPtr(llvm::ConstantInt::get(i64Ty, hostAddr), i8PtrTy);
+
+                llvm::IRBuilder<> entryBuilder(&func->getEntryBlock(),
+                                               func->getEntryBlock().getFirstInsertionPt());
+                llvm::Value* argsAlloca = entryBuilder.CreateAlloca(
+                    i64Ty, llvm::ConstantInt::get(i32Ty, std::max(uint8_t(1), numParams)));
+                for (uint8_t i = 0; i < numParams; ++i) {
+                    llvm::Value* argVal = getValue(inst.arg(1 + i));
+                    if (argVal->getType() != i64Ty) {
+                        if (argVal->getType()->isPointerTy()) {
+                            argVal = bld->CreatePtrToInt(argVal, i64Ty);
+                        } else if (argVal->getType()->isIntegerTy()) {
+                            argVal = bld->CreateZExt(argVal, i64Ty);
+                        }
+                    }
+                    bld->CreateStore(argVal, bld->CreateGEP(i64Ty, argsAlloca,
+                                                            llvm::ConstantInt::get(i32Ty, i)));
+                }
+
+                auto* trampolineTy = llvm::FunctionType::get(
+                    i64Ty, {i8PtrTy, llvm::PointerType::get(i64Ty, 0), i8Ty}, false);
+                llvm::FunctionCallee trampoline =
+                    mod->getOrInsertFunction("umbraCallHost", trampolineTy);
+
+                result = bld->CreateCall(
+                    trampoline, {hostPtr, argsAlloca, llvm::ConstantInt::get(i8Ty, numParams)});
             }
 
-            // Declare and call trampoline.
-            auto* trampolineTy = llvm::FunctionType::get(
-                i64Ty, {i8PtrTy, llvm::PointerType::get(i64Ty, 0), i8Ty}, false);
-            llvm::FunctionCallee trampoline =
-                mod->getOrInsertFunction("umbraCallHost", trampolineTy);
-
-            llvm::Value* result = bld->CreateCall(
-                trampoline, {hostPtr, argsAlloca, llvm::ConstantInt::get(i8Ty, numParams)});
-
-            const auto& calleeMeta = prog.functionMeta(calleeId);
+            // Convert the return value to the expected IR type.
             if (calleeMeta.returnType != ir::TypeId::VOID) {
-                llvm::Type* retTy = toLLVMType(calleeMeta.returnType);
-                if (retTy != result->getType()) {
-                    if (retTy->isPointerTy()) {
-                        result = bld->CreateIntToPtr(result, retTy);
-                    } else if (retTy->isIntegerTy()) {
-                        result = bld->CreateTrunc(result, retTy);
+                llvm::Type* expectedRetTy = toLLVMType(calleeMeta.returnType);
+                if (result->getType() != expectedRetTy) {
+                    if (expectedRetTy->isPointerTy()) {
+                        result = bld->CreateIntToPtr(result, expectedRetTy);
+                    } else if (expectedRetTy->isIntegerTy() && result->getType()->isIntegerTy()) {
+                        result = bld->CreateTrunc(result, expectedRetTy);
+                    } else if (expectedRetTy->isIntegerTy() && result->getType()->isPointerTy()) {
+                        result = bld->CreatePtrToInt(result, expectedRetTy);
                     }
                 }
                 setValue(instOff, result);
@@ -766,15 +847,15 @@ void LLVMCompiler::Impl::translateInstruction(ir::Program& prog,
             if (seed->getType() != i64Ty) {
                 seed = bld->CreateZExt(seed, i64Ty);
             }
-            auto* crc32Intr = llvm::Intrinsic::getDeclaration(
-                mod, llvm::Intrinsic::x86_sse42_crc32_64_64);
+            auto* crc32Intr =
+                llvm::Intrinsic::getDeclaration(mod, llvm::Intrinsic::x86_sse42_crc32_64_64);
             setValue(instOff, bld->CreateCall(crc32Intr, {seed, data}));
             break;
         }
         case Op::BSWAP: {
             llvm::Value* val = getValue(inst.arg(0));
-            auto* bswapIntr = llvm::Intrinsic::getDeclaration(
-                mod, llvm::Intrinsic::bswap, {val->getType()});
+            auto* bswapIntr =
+                llvm::Intrinsic::getDeclaration(mod, llvm::Intrinsic::bswap, {val->getType()});
             setValue(instOff, bld->CreateCall(bswapIntr, {val}));
             break;
         }
@@ -800,13 +881,18 @@ void LLVMCompiler::Impl::translateInstruction(ir::Program& prog,
 
 llvm::Type* LLVMCompiler::Impl::toLLVMType(ir::TypeId type) {
     switch (type) {
-        case ir::TypeId::VOID: return llvm::Type::getVoidTy(*ctx);
+        case ir::TypeId::VOID:
+            return llvm::Type::getVoidTy(*ctx);
         case ir::TypeId::BOOL:
-        case ir::TypeId::INT8: return llvm::Type::getInt8Ty(*ctx);
-        case ir::TypeId::INT32: return llvm::Type::getInt32Ty(*ctx);
+        case ir::TypeId::INT8:
+            return llvm::Type::getInt8Ty(*ctx);
+        case ir::TypeId::INT32:
+            return llvm::Type::getInt32Ty(*ctx);
         case ir::TypeId::INT64:
-        case ir::TypeId::UINT64: return llvm::Type::getInt64Ty(*ctx);
-        case ir::TypeId::PTR: return llvm::Type::getInt8PtrTy(*ctx);
+        case ir::TypeId::UINT64:
+            return llvm::Type::getInt64Ty(*ctx);
+        case ir::TypeId::PTR:
+            return llvm::Type::getInt8PtrTy(*ctx);
     }
     __builtin_unreachable();
 }
@@ -823,9 +909,8 @@ llvm::Value* LLVMCompiler::Impl::getValue(ir::IROp op) {
         uint64_t payload = inst.constPayload();
         llvm::Value* val = nullptr;
         if (inst.type() == ir::TypeId::PTR) {
-            val = bld->CreateIntToPtr(
-                llvm::ConstantInt::get(llvm::Type::getInt64Ty(*ctx), payload),
-                llvm::Type::getInt8PtrTy(*ctx));
+            val = bld->CreateIntToPtr(llvm::ConstantInt::get(llvm::Type::getInt64Ty(*ctx), payload),
+                                      llvm::Type::getInt8PtrTy(*ctx));
         } else {
             val = llvm::ConstantInt::get(toLLVMType(inst.type()), payload, /*isSigned=*/true);
         }
@@ -838,6 +923,70 @@ llvm::Value* LLVMCompiler::Impl::getValue(ir::IROp op) {
 
 void LLVMCompiler::Impl::setValue(ir::IROp op, llvm::Value* val) {
     valueMap[op] = val;
+}
+
+llvm::Value* LLVMCompiler::Impl::coerceArg(llvm::Value* val, llvm::Type* expectedTy) {
+    if (val->getType() == expectedTy) {
+        return val;
+    }
+    if (expectedTy->isPointerTy() && val->getType()->isIntegerTy()) {
+        return bld->CreateIntToPtr(val, expectedTy);
+    }
+    if (expectedTy->isIntegerTy() && val->getType()->isPointerTy()) {
+        return bld->CreatePtrToInt(val, expectedTy);
+    }
+    if (expectedTy->isIntegerTy() && val->getType()->isIntegerTy()) {
+        unsigned srcBits = val->getType()->getIntegerBitWidth();
+        unsigned dstBits = expectedTy->getIntegerBitWidth();
+        if (srcBits < dstBits) {
+            return bld->CreateZExt(val, expectedTy);
+        }
+        return bld->CreateTrunc(val, expectedTy);
+    }
+    return val;
+}
+
+// ── Inline host function support ───────────────────────────────────────────
+
+bool LLVMCompiler::Impl::hasInlineableFunctions(const ir::Program& prog) {
+    for (uint32_t i = 0; i < prog.numFunctions(); ++i) {
+        if (prog.functionMeta(i).inlineable) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void LLVMCompiler::Impl::linkInlineBitcode(llvm::Module& targetModule, llvm::LLVMContext& llvmCtx) {
+    // Parse the embedded bitcode.
+    auto bufOrErr = llvm::MemoryBuffer::getMemBuffer(
+        llvm::StringRef(reinterpret_cast<const char*>(kHostInlineBitcode),  // NOLINT
+                        kHostInlineBitcodeSize),
+        "host_inline", /*RequiresNullTerminator=*/false);
+
+    auto modOrErr = llvm::parseBitcodeFile(bufOrErr->getMemBufferRef(), llvmCtx);
+    if (!modOrErr) {
+        // If bitcode parsing fails, fall back to external symbol resolution.
+        llvm::consumeError(modOrErr.takeError());
+        return;
+    }
+    auto inlineModule = std::move(*modOrErr);
+
+    // Mark all defined functions as alwaysinline.
+    for (auto& fn : *inlineModule) {
+        if (!fn.isDeclaration()) {
+            fn.addFnAttr(llvm::Attribute::AlwaysInline);
+            fn.setLinkage(llvm::GlobalValue::LinkOnceODRLinkage);
+        }
+    }
+
+    // Link into the target module.  LinkOnlyNeeded pulls in only functions
+    // that the target module actually references (via declarations).
+    if (llvm::Linker::linkModules(targetModule, std::move(inlineModule),
+                                  llvm::Linker::Flags::LinkOnlyNeeded)) {
+        // Linking failed — non-fatal, fall back to external symbol resolution.
+        return;
+    }
 }
 
 }  // namespace umbra::llvm_backend

@@ -92,6 +92,13 @@ Bool CodegenContext::lor(Bool lhs, Bool rhs) {
 ir::FunctionId CodegenContext::registerHostFunction(const std::string& name, ir::HostFunction func,
                                                     ir::TypeId returnType,
                                                     const std::vector<ir::TypeId>& paramTypes) {
+    return registerHostFunction(name, std::move(func), returnType, paramTypes, nullptr, false);
+}
+
+ir::FunctionId CodegenContext::registerHostFunction(const std::string& name, ir::HostFunction func,
+                                                    ir::TypeId returnType,
+                                                    const std::vector<ir::TypeId>& paramTypes,
+                                                    void* directPtr, bool inlineable) {
     // Save current insertion point, since createFunction changes it.
     auto savedBlock = builder_.getCurrentBlock();
     auto savedFunction = builder_.getCurrentFunction();
@@ -99,7 +106,7 @@ ir::FunctionId CodegenContext::registerHostFunction(const std::string& name, ir:
     // We register on the builder side so the function gets an ID in the function table.
     // But the actual HostFunction is registered on the Program after finalize().
     auto id = builder_.createFunction(name, returnType, paramTypes);
-    hostFuncs_.push_back({id, std::move(func)});
+    hostFuncs_.push_back({id, std::move(func), directPtr, inlineable});
 
     // Restore insertion point to the original function/block.
     builder_.setCurrentFunction(savedFunction);
@@ -121,8 +128,11 @@ void CodegenContext::patchPhiBlock(ir::IROp phiOp, uint8_t incomingIndex, ir::Bl
 ir::Program CodegenContext::finalize() {
     auto program = builder_.finalize();
     // Register all host functions on the finalized program.
-    for (auto& [id, func] : hostFuncs_) {
-        program.registerHostFunction(id, std::move(func));
+    for (auto& entry : hostFuncs_) {
+        program.registerHostFunction(entry.id, std::move(entry.func));
+        auto& meta = program.functionMetaMut(entry.id);
+        meta.directPtr = entry.directPtr;
+        meta.inlineable = entry.inlineable;
     }
     hostFuncs_.clear();
     return program;

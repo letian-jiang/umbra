@@ -301,4 +301,17 @@ TEST_CASE("Benchmark: EXPLAIN PROFILE Q1 SF=0.01", "[perf]") {
         }
         CHECK(output.find("Result:") != std::string::npos);
     }
+
+#ifdef UMBRA_LLVM_BACKEND
+    SECTION("llvm") {
+        std::string output = explain::runExplain(explain::ExplainLevel::PROFILE, Q1_SQL, catalog,
+                                                 table, execution::Backend::LLVM);
+        std::cerr << "\n=== EXPLAIN PROFILE Q1 (llvm, " << NUM_ROWS << " rows) ===\n";
+        auto pos = output.find("Profile");
+        if (pos != std::string::npos) {
+            std::cerr << output.substr(pos);
+        }
+        CHECK(output.find("Result:") != std::string::npos);
+    }
+#endif
 }

@@ -1030,9 +1030,8 @@ void FlyingStartCompiler::translateLoad(ir::Program& /*program*/, const ir::Inst
             break;
         case ir::TypeId::INT32:
             if (deferredGep) {
-                as_->movsxd(
-                    x86::rdx,
-                    x86::dword_ptr(x86::rax, x86::rcx, gepScaleShift(ptrLoc->gepElemType)));
+                as_->movsxd(x86::rdx,
+                            x86::dword_ptr(x86::rax, x86::rcx, gepScaleShift(ptrLoc->gepElemType)));
             } else {
                 as_->movsxd(x86::rcx, x86::dword_ptr(x86::rax));
             }

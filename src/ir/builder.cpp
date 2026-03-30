@@ -338,7 +338,8 @@ IROp IRBuilder::emitTrunc(TypeId targetType, IROp operand) {
 
 IROp IRBuilder::emitBitcast(TypeId targetType, IROp operand) {
     ir::InstructionView operandInst(instBuffer_.data(), operand);
-    if (operandInst.type() == targetType || ir::typeSize(operandInst.type()) == ir::typeSize(targetType)) {
+    if (operandInst.type() == targetType ||
+        ir::typeSize(operandInst.type()) == ir::typeSize(targetType)) {
         return operand;
     }
     std::array<IROp, 1> args = {operand};

@@ -35,6 +35,9 @@ class Program {
     /// Get function metadata by index.
     [[nodiscard]] const FunctionMeta& functionMeta(FunctionId id) const { return meta_[id]; }
 
+    /// Mutable accessor for function metadata (used during finalization).
+    FunctionMeta& functionMetaMut(FunctionId id) { return meta_[id]; }
+
     /// Decode an instruction at a given offset.
     [[nodiscard]] InstructionView instructionAt(IROp offset) const {
         return {instBuffer_.data(), offset};
