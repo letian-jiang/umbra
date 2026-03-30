@@ -220,5 +220,17 @@ target_link_libraries(test_benchmark PRIVATE
 )
 add_test(NAME benchmark COMMAND test_benchmark)
 
+# LLVM backend tests (conditional)
+if(LLVM_BACKEND)
+    add_executable(test_llvm_backend
+        ir/test_llvm_backend.cpp
+    )
+    target_link_libraries(test_llvm_backend PRIVATE
+        umbra_lib
+        Catch2::Catch2WithMain
+    )
+    add_test(NAME llvm_backend COMMAND test_llvm_backend)
+endif()
+
 # Verify the main executable runs and exits 0 (pipe mode, no input)
 add_test(NAME main_runs COMMAND sh -c "echo '' | $<TARGET_FILE:umbra>")

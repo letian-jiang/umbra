@@ -47,6 +47,24 @@ target_link_libraries(umbra_lib PUBLIC
     asmjit
 )
 
+# ── Optional LLVM backend ──────────────────────────────────────────────────
+
+if(LLVM_BACKEND)
+    target_sources(umbra_lib PRIVATE
+        backend/llvm/llvm_compiler.cpp
+    )
+    target_include_directories(umbra_lib SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
+    target_compile_definitions(umbra_lib PUBLIC UMBRA_LLVM_BACKEND)
+
+    separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND ${LLVM_DEFINITIONS})
+    target_compile_definitions(umbra_lib PRIVATE ${LLVM_DEFINITIONS_LIST})
+
+    llvm_map_components_to_libnames(llvm_libs
+        core orcjit native support passes
+    )
+    target_link_libraries(umbra_lib PRIVATE ${llvm_libs})
+endif()
+
 # Main executable
 add_executable(umbra main.cpp)
 target_link_libraries(umbra PRIVATE umbra_lib)

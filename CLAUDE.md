@@ -31,7 +31,7 @@ Reference (Tidy Tuples paper, SF=0.01, 1 thread): Umbra Flying Start total=2.19m
 
 ```
 Shell → SQL string → Parser → AST → Binder → Logical Plan → Optimizer → Physical Plan → Pipeline[]
-  Per Pipeline: Tidy Tuples → Umbra IR → Interpreter or Flying Start (asmjit → x86-64) → Result
+  Per Pipeline: Tidy Tuples → Umbra IR → Interpreter or Flying Start (asmjit → x86-64) or LLVM (O3 + ORC JIT) → Result
   Cross-cutting: Storage (columnar), EXPLAIN (7 levels)
 ```
 
@@ -47,6 +47,7 @@ Shell → SQL string → Parser → AST → Binder → Logical Plan → Optimize
 | Umbra IR | `src/ir/` | `doc/ir.md` | Opcodes, instruction encoding, builder, constant folding, DCE |
 | Interpreter | `src/backend/interpreter/` | `doc/interpreter.md` | Execution model, value slots, PHI resolution |
 | Flying Start | `src/backend/flying_start/` | `doc/flying-start.md` | Register alloc, translation rules, optimizations |
+| LLVM Backend | `src/backend/llvm/` | `doc/llvm-backend.md` | IR lowering rules, LLVM optimization, ORC JIT |
 | EXPLAIN | `src/explain/` | `doc/explain.md` | EXPLAIN levels, output format |
 | Shell | `src/shell/` | `doc/shell.md` | REPL commands, key bindings, result formatting |
 | Execution | `src/execution/` | `doc/optimizer.md` | Pipeline execution, result materialization |

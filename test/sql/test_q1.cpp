@@ -141,14 +141,15 @@ static Table makeQ1TestTable() {
 
 // ── Helper: execute Q1-like SQL on test data ─────────────────────────────────
 
-static ResultCollector executeQ1(Catalog& catalog, Table& table, const std::string& sql) {
+static ResultCollector executeQ1(Catalog& catalog, Table& table, const std::string& sql,
+                                 Backend backend = Backend::FLYING_START) {
     auto parseResult = parser::Parser::parse(sql);
     binder::Binder binder(catalog);
     auto bindResult = binder.bind(*parseResult.stmt);
     optimizer::Optimizer opt;
     auto optResult = opt.optimize(bindResult);
     ResultCollector collector;
-    PipelineExecutor executor;
+    PipelineExecutor executor(backend);
     executor.execute(optResult, table, collector);
     return collector;
 }
@@ -361,3 +362,57 @@ TEST_CASE("Q1 all rows pass when dates before cutoff", "[sql][q1]") {
     // count = 2
     CHECK(collector.rows()[0].values[9] == 2);
 }
+
+// ── LLVM backend Q1 tests ───────────────────────────────────────────────────
+
+#ifdef UMBRA_LLVM_BACKEND
+
+TEST_CASE("Q1 LLVM backend: full end-to-end", "[sql][q1][llvm]") {
+    auto catalog = makeQ1Catalog();
+    auto table = makeQ1TestTable();
+
+    auto collector = executeQ1(catalog, table, Q1_SQL, Backend::LLVM);
+
+    REQUIRE(collector.numRows() == 3);
+
+    // Group A-F: rows 0, 1, 5 pass filter.
+    CHECK(collector.rows()[0].values[0] == 65);  // returnflag = 'A'
+    CHECK(collector.rows()[0].values[1] == 70);  // linestatus = 'F'
+    CHECK(collector.rows()[0].values[2] == 7000);
+    CHECK(collector.rows()[0].values[3] == 70000);
+    CHECK(collector.rows()[0].values[9] == 3);
+
+    // Group N-O: rows 2, 3, 6 pass filter.
+    CHECK(collector.rows()[1].values[0] == 78);
+    CHECK(collector.rows()[1].values[1] == 79);
+    CHECK(collector.rows()[1].values[2] == 5700);
+    CHECK(collector.rows()[1].values[9] == 3);
+
+    // Group R-F: rows 4, 7 pass filter.
+    CHECK(collector.rows()[2].values[0] == 82);
+    CHECK(collector.rows()[2].values[1] == 70);
+    CHECK(collector.rows()[2].values[2] == 7500);
+    CHECK(collector.rows()[2].values[9] == 2);
+}
+
+TEST_CASE("Q1 LLVM backend: cross-validate with Flying Start", "[sql][q1][llvm]") {
+    auto catalog = makeQ1Catalog();
+    auto table = makeQ1TestTable();
+
+    auto fsResult = executeQ1(catalog, table, Q1_SQL, Backend::FLYING_START);
+    auto llvmResult = executeQ1(catalog, table, Q1_SQL, Backend::LLVM);
+
+    REQUIRE(fsResult.numRows() == llvmResult.numRows());
+    for (size_t i = 0; i < fsResult.numRows(); ++i) {
+        INFO("Row " << i);
+        const auto& fsRow = fsResult.rows()[i];
+        const auto& llvmRow = llvmResult.rows()[i];
+        REQUIRE(fsRow.values.size() == llvmRow.values.size());
+        for (size_t j = 0; j < fsRow.values.size(); ++j) {
+            INFO("Column " << j);
+            CHECK(fsRow.values[j] == llvmRow.values[j]);
+        }
+    }
+}
+
+#endif  // UMBRA_LLVM_BACKEND

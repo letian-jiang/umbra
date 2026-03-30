@@ -23,6 +23,7 @@ namespace umbra::execution {
 enum class Backend {
     INTERPRETER,   // Reference interpreter — no compilation overhead, slower execution.
     FLYING_START,  // Flying Start JIT — fast single-pass x86-64 compilation, native execution.
+    LLVM,          // LLVM JIT — O3-optimized compilation, best execution performance.
 };
 
 /// Per-pipeline timing breakdown.

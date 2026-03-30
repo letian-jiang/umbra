@@ -10,6 +10,9 @@
 
 #include "backend/flying_start/translator.h"
 #include "backend/interpreter/interpreter.h"
+#ifdef UMBRA_LLVM_BACKEND
+#include "backend/llvm/llvm_compiler.h"
+#endif
 #include "codegen/api/codegen_context.h"
 #include "codegen/operators/hash_aggregate.h"
 #include "codegen/operators/projection.h"
@@ -201,8 +204,16 @@ std::string PipelineExecutor::generateASM(const optimizer::OptimizeResult& resul
     std::string asmText;
     for (size_t i = 0; i < pipelines.size(); ++i) {
         std::string pipelineAsm;
-        flying_start::FlyingStartCompiler jitCompiler;
-        jitCompiler.compileWithLog(pipelines[i].program, pipelines[i].funcId, pipelineAsm);
+#ifdef UMBRA_LLVM_BACKEND
+        if (backend_ == Backend::LLVM) {
+            llvm_backend::LLVMCompiler llvmCompiler;
+            llvmCompiler.compileWithLog(pipelines[i].program, pipelines[i].funcId, pipelineAsm);
+        } else
+#endif
+        {
+            flying_start::FlyingStartCompiler jitCompiler;
+            jitCompiler.compileWithLog(pipelines[i].program, pipelines[i].funcId, pipelineAsm);
+        }
 
         asmText += "=== Pipeline " + std::to_string(i) + ": " + pipelines[i].name + " ===\n";
         asmText += pipelineAsm;
@@ -295,7 +306,7 @@ void PipelineExecutor::executeBuildPipeline(const optimizer::OptimizeResult& res
 
     // Set up RuntimeContext.
     table.finalize();
-    RuntimeContext rtCtx;
+    RuntimeContext rtCtx{};
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     rtCtx.columnPtrs = const_cast<void**>(table.columnPtrs());
     rtCtx.rowCount = table.rowCount;
@@ -306,12 +317,28 @@ void PipelineExecutor::executeBuildPipeline(const optimizer::OptimizeResult& res
     std::vector<uint64_t> args = {ctxArg};
 
     // Compile + execute through selected backend.
-    // The FlyingStartCompiler must stay alive through execution (it owns JIT'd code).
-    flying_start::FlyingStartCompiler jitCompiler;
+    // Compile + execute through selected backend.
+    // Each compiler must stay alive through execution (it owns JIT'd code).
     void* jitFunc = nullptr;
+    flying_start::FlyingStartCompiler jitCompiler;
+#ifdef UMBRA_LLVM_BACKEND
+    std::unique_ptr<llvm_backend::LLVMCompiler> llvmCompiler;
+#endif
 
-    if (backend_ == Backend::FLYING_START) {
-        jitFunc = jitCompiler.compile(program, funcId);
+    switch (backend_) {
+        case Backend::FLYING_START:
+            jitFunc = jitCompiler.compile(program, funcId);
+            break;
+        case Backend::LLVM:
+#ifdef UMBRA_LLVM_BACKEND
+            llvmCompiler = std::make_unique<llvm_backend::LLVMCompiler>();
+            jitFunc = llvmCompiler->compile(program, funcId);
+#else
+            throw std::runtime_error("LLVM backend not compiled. Rebuild with -DLLVM_BACKEND=ON");
+#endif
+            break;
+        case Backend::INTERPRETER:
+            break;
     }
 
     auto compileEnd = now();
@@ -325,10 +352,16 @@ void PipelineExecutor::executeBuildPipeline(const optimizer::OptimizeResult& res
             interp.execute(program, funcId, std::span<const uint64_t>(args));
             break;
         }
-        case Backend::FLYING_START: {
+        case Backend::FLYING_START:
             flying_start::FlyingStartCompiler::execute(jitFunc, std::span<const uint64_t>(args));
             break;
-        }
+        case Backend::LLVM:
+#ifdef UMBRA_LLVM_BACKEND
+            llvm_backend::LLVMCompiler::execute(jitFunc, std::span<const uint64_t>(args));
+#else
+            throw std::runtime_error("LLVM backend not compiled. Rebuild with -DLLVM_BACKEND=ON");
+#endif
+            break;
     }
 
     auto execEnd = now();
@@ -425,12 +458,27 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
     std::vector<uint64_t> args = {ctxArg};
 
     // Compile + execute through selected backend.
-    // The FlyingStartCompiler must stay alive through execution (it owns JIT'd code).
-    flying_start::FlyingStartCompiler jitCompiler;
+    // Each compiler must stay alive through execution (it owns JIT'd code).
     void* jitFunc = nullptr;
+    flying_start::FlyingStartCompiler jitCompiler;
+#ifdef UMBRA_LLVM_BACKEND
+    std::unique_ptr<llvm_backend::LLVMCompiler> llvmCompiler;
+#endif
 
-    if (backend_ == Backend::FLYING_START) {
-        jitFunc = jitCompiler.compile(program, funcId);
+    switch (backend_) {
+        case Backend::FLYING_START:
+            jitFunc = jitCompiler.compile(program, funcId);
+            break;
+        case Backend::LLVM:
+#ifdef UMBRA_LLVM_BACKEND
+            llvmCompiler = std::make_unique<llvm_backend::LLVMCompiler>();
+            jitFunc = llvmCompiler->compile(program, funcId);
+#else
+            throw std::runtime_error("LLVM backend not compiled. Rebuild with -DLLVM_BACKEND=ON");
+#endif
+            break;
+        case Backend::INTERPRETER:
+            break;
     }
 
     auto compileEnd = now();
@@ -444,10 +492,16 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
             interp.execute(program, funcId, std::span<const uint64_t>(args));
             break;
         }
-        case Backend::FLYING_START: {
+        case Backend::FLYING_START:
             flying_start::FlyingStartCompiler::execute(jitFunc, std::span<const uint64_t>(args));
             break;
-        }
+        case Backend::LLVM:
+#ifdef UMBRA_LLVM_BACKEND
+            llvm_backend::LLVMCompiler::execute(jitFunc, std::span<const uint64_t>(args));
+#else
+            throw std::runtime_error("LLVM backend not compiled. Rebuild with -DLLVM_BACKEND=ON");
+#endif
+            break;
     }
 
     auto execEnd = now();

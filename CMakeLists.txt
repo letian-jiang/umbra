@@ -72,6 +72,16 @@ target_include_directories(libpg_query INTERFACE
 )
 add_dependencies(libpg_query libpg_query_ext)
 
+# ── Optional LLVM backend ──────────────────────────────────────────────────
+
+option(LLVM_BACKEND "Enable LLVM JIT backend (requires LLVM 14+)" OFF)
+
+if(LLVM_BACKEND)
+    find_package(LLVM 14 REQUIRED CONFIG)
+    message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
+    message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
+endif()
+
 # ── Testing ─────────────────────────────────────────────────────────────────
 
 enable_testing()

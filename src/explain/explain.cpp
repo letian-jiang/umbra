@@ -225,12 +225,25 @@ std::string runExplain(ExplainLevel level, const std::string& sql, const Catalog
         return out.str();
     }
 
-    // === ASM: generate x86-64 assembly via Flying Start compilation ===
+    // === ASM: generate assembly or LLVM IR via the selected backend ===
     if (level == ExplainLevel::ASM) {
-        execution::PipelineExecutor executor(execution::Backend::FLYING_START);
-        out << "ASM (x86-64, Flying Start):\n";
-        out << executor.generateASM(optResult);
-        out << "\n";
+#ifdef UMBRA_LLVM_BACKEND
+        if (backend == execution::Backend::LLVM) {
+            execution::PipelineExecutor executor(execution::Backend::LLVM);
+            out << "LLVM IR (optimized, O3):\n";
+            out << executor.generateASM(optResult);
+            out << "\n";
+        } else
+#endif
+        {
+            if (backend == execution::Backend::LLVM) {
+                out << "(LLVM backend not compiled; showing Flying Start ASM instead)\n\n";
+            }
+            execution::PipelineExecutor executor(execution::Backend::FLYING_START);
+            out << "ASM (x86-64, Flying Start):\n";
+            out << executor.generateASM(optResult);
+            out << "\n";
+        }
         return out.str();
     }
 
@@ -265,8 +278,18 @@ std::string runExplain(ExplainLevel level, const std::string& sql, const Catalog
         out << std::fixed;
         out.precision(2);
 
-        std::string backendName =
-            (backend == execution::Backend::INTERPRETER) ? "interpreter" : "flying-start";
+        std::string backendName;
+        switch (backend) {
+            case execution::Backend::INTERPRETER:
+                backendName = "interpreter";
+                break;
+            case execution::Backend::FLYING_START:
+                backendName = "flying-start";
+                break;
+            case execution::Backend::LLVM:
+                backendName = "llvm";
+                break;
+        }
         out << "Profile (backend: " << backendName << "):\n";
         out << "                  plan    codegen  compile  execute  total\n";
         for (size_t i = 0; i < profiles.size(); ++i) {
