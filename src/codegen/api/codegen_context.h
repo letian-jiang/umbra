@@ -144,6 +144,14 @@ class CodegenContext {
                                         ir::TypeId returnType,
                                         const std::vector<ir::TypeId>& paramTypes);
 
+    /// Register a host function with direct C ABI pointer and inline marker.
+    /// @param directPtr  extern "C" function pointer for direct LLVM calls (or nullptr).
+    /// @param inlineable If true, LLVM backend will inline this via embedded bitcode.
+    ir::FunctionId registerHostFunction(const std::string& name, ir::HostFunction func,
+                                        ir::TypeId returnType,
+                                        const std::vector<ir::TypeId>& paramTypes, void* directPtr,
+                                        bool inlineable);
+
     /// Emit a call instruction.
     template <typename Ret, typename... Args>
     Ret call(ir::FunctionId callee, Args... args);
@@ -160,6 +168,8 @@ class CodegenContext {
     struct HostFuncEntry {
         ir::FunctionId id;
         ir::HostFunction func;
+        void* directPtr = nullptr;
+        bool inlineable = false;
     };
     std::vector<HostFuncEntry> hostFuncs_;
 };

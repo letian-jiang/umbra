@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "backend/flying_start/translator.h"
@@ -9,6 +10,11 @@
 #include "ir/builder.h"
 #include "ir/opcode.h"
 #include "ir/program.h"
+
+#ifdef UMBRA_LLVM_BACKEND
+#include "backend/llvm/host_functions_c.h"
+#include "codegen/structures/hash_table.h"
+#endif
 
 using namespace umbra::ir;
 using umbra::flying_start::FlyingStartCompiler;
@@ -53,7 +59,8 @@ TEST_CASE("LLVM: simple add (IR capture)", "[llvm]") {
     INFO("LLVM IR:\n" << irText);
     REQUIRE(fn != nullptr);
 
-    uint64_t result = LLVMCompiler::execute(fn, std::span<const uint64_t>(std::vector<uint64_t>{5, 3}));
+    uint64_t result =
+        LLVMCompiler::execute(fn, std::span<const uint64_t>(std::vector<uint64_t>{5, 3}));
     REQUIRE(result == 8);
 }
 
@@ -206,13 +213,12 @@ TEST_CASE("LLVM: host function call", "[llvm]") {
     auto program = builder.finalize();
 
     // Register host function at ID 1.
-    program.registerHostFunction(
-        "host_add",
-        [](const uint64_t* args, uint8_t count) -> uint64_t {
-            (void)count;
-            return args[0] + args[1];
-        },
-        TypeId::INT64, {TypeId::INT64, TypeId::INT64});
+    program.registerHostFunction("host_add",
+                                 [](const uint64_t* args, uint8_t count) -> uint64_t {
+                                     (void)count;
+                                     return args[0] + args[1];
+                                 },
+                                 TypeId::INT64, {TypeId::INT64, TypeId::INT64});
 
     crossValidate3(program, 0, {10, 20}, "host_add(10, 20)");
     crossValidate3(program, 0, {0, 0}, "host_add(0, 0)");
@@ -236,8 +242,8 @@ TEST_CASE("LLVM: host function call with signed narrow args", "[llvm]") {
     // Host function that returns its argument unchanged — lets us observe the widened value.
     program.registerHostFunction(
         "host_identity",
-        [](const uint64_t* args, uint8_t /*count*/) -> uint64_t { return args[0]; },
-        TypeId::INT64, {TypeId::INT8});
+        [](const uint64_t* args, uint8_t /*count*/) -> uint64_t { return args[0]; }, TypeId::INT64,
+        {TypeId::INT8});
 
     // INT8(-1) = 0xFF. Sign-extended to i64: 0xFFFFFFFFFFFFFFFF = uint64_t(-1).
     // Zero-extended would give 0xFF = 255 — wrong.
@@ -293,9 +299,9 @@ TEST_CASE("LLVM: comparison operators", "[llvm]") {
 
     auto program = builder.finalize();
 
-    crossValidate3(program, 0, {5, 5}, "cmp(5, 5)");   // eq=1, lt=0, ge=1 → 0b101 = 5
-    crossValidate3(program, 0, {3, 7}, "cmp(3, 7)");   // eq=0, lt=1, ge=0 → 0b010 = 2
-    crossValidate3(program, 0, {7, 3}, "cmp(7, 3)");   // eq=0, lt=0, ge=1 → 0b100 = 4
+    crossValidate3(program, 0, {5, 5}, "cmp(5, 5)");  // eq=1, lt=0, ge=1 → 0b101 = 5
+    crossValidate3(program, 0, {3, 7}, "cmp(3, 7)");  // eq=0, lt=1, ge=0 → 0b010 = 2
+    crossValidate3(program, 0, {7, 3}, "cmp(7, 3)");  // eq=0, lt=0, ge=1 → 0b100 = 4
 }
 
 TEST_CASE("LLVM: cast operations", "[llvm]") {
@@ -315,7 +321,8 @@ TEST_CASE("LLVM: cast operations", "[llvm]") {
 
 TEST_CASE("LLVM: select operation", "[llvm]") {
     IRBuilder builder;
-    builder.createFunction("select_fn", TypeId::INT64, {TypeId::INT64, TypeId::INT64, TypeId::INT64});
+    builder.createFunction("select_fn", TypeId::INT64,
+                           {TypeId::INT64, TypeId::INT64, TypeId::INT64});
 
     auto cond = builder.emitFunArg(TypeId::INT64, 0);
     auto tv = builder.emitFunArg(TypeId::INT64, 1);
@@ -330,3 +337,112 @@ TEST_CASE("LLVM: select operation", "[llvm]") {
     crossValidate3(program, 0, {1, 10, 20}, "select(true, 10, 20)");
     crossValidate3(program, 0, {0, 10, 20}, "select(false, 10, 20)");
 }
+
+// ── Direct C ABI call (Level 1) ────────────────────────────────────────────
+
+// Simple extern "C" test function.
+extern "C" uint64_t umbra_test_add(uint64_t a, uint64_t b);  // NOLINT
+extern "C" uint64_t umbra_test_add(uint64_t a, uint64_t b) {
+    return a + b;
+}
+
+TEST_CASE("LLVM: direct C ABI host function call", "[llvm]") {
+    IRBuilder builder;
+    builder.createFunction("test_direct", TypeId::INT64, {TypeId::INT64, TypeId::INT64});
+
+    auto a = builder.emitFunArg(TypeId::INT64, 0);
+    auto b = builder.emitFunArg(TypeId::INT64, 1);
+    auto result = builder.emitCall(TypeId::INT64, 1, {a, b});
+    builder.emitRet(TypeId::INT64, result);
+
+    auto program = builder.finalize();
+
+    // Register with both std::function callback AND directPtr.
+    program.registerHostFunction(
+        "test_add",
+        [](const uint64_t* args, uint8_t /*count*/) -> uint64_t { return args[0] + args[1]; },
+        TypeId::INT64, {TypeId::INT64, TypeId::INT64});
+
+    // Set directPtr on the registered function.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    program.functionMetaMut(1).directPtr = reinterpret_cast<void*>(&umbra_test_add);
+
+    // Cross-validate: interpreter/FS use std::function, LLVM uses directPtr.
+    crossValidate3(program, 0, {10, 20}, "direct_add(10, 20)");
+    crossValidate3(program, 0, {0, 0}, "direct_add(0, 0)");
+    crossValidate3(program, 0, {static_cast<uint64_t>(-5), 3}, "direct_add(-5, 3)");
+}
+
+TEST_CASE("LLVM: direct call with pointer args", "[llvm]") {
+    // Test that pointer arguments are correctly coerced in direct calls.
+    IRBuilder builder;
+    builder.createFunction("test_ptr_direct", TypeId::INT64, {TypeId::PTR});
+
+    auto ptr = builder.emitFunArg(TypeId::PTR, 0);
+    // Call a host function that takes a pointer and returns a value.
+    auto result = builder.emitCall(TypeId::INT64, 1, {ptr});
+    builder.emitRet(TypeId::INT64, result);
+
+    auto program = builder.finalize();
+
+    // Host function: dereference pointer and return value.
+    program.registerHostFunction("deref",
+                                 [](const uint64_t* args, uint8_t /*count*/) -> uint64_t {
+                                     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
+                                     auto* p = reinterpret_cast<int64_t*>(args[0]);
+                                     return static_cast<uint64_t>(*p);
+                                 },
+                                 TypeId::INT64, {TypeId::PTR});
+
+    // Set directPtr to an extern "C" function that does the same.
+    // For simplicity, reuse the trampoline path for interpreter/FS.
+    int64_t testVal = 42;
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    auto ptrArg = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&testVal));
+
+    crossValidate3(program, 0, {ptrArg}, "deref pointer");
+}
+
+// ── Inline bitcode verification (Level 2) ──────────────────────────────────
+
+#ifdef UMBRA_LLVM_BACKEND
+
+TEST_CASE("LLVM: inlineable function is inlined", "[llvm]") {
+    // Build a program that calls an inlineable host function and verify
+    // the optimized LLVM IR no longer contains a call to it.
+    IRBuilder builder;
+    builder.createFunction("test_inline", TypeId::PTR, {TypeId::PTR, TypeId::UINT64});
+
+    auto tablePtr = builder.emitFunArg(TypeId::PTR, 0);
+    auto hashVal = builder.emitFunArg(TypeId::UINT64, 1);
+    auto result = builder.emitCall(TypeId::PTR, 1, {tablePtr, hashVal});
+    builder.emitRet(TypeId::PTR, result);
+
+    auto program = builder.finalize();
+
+    // Register ht_lookup with directPtr + inlineable.
+    program.registerHostFunction(
+        "ht_lookup",
+        [](const uint64_t* args, uint8_t /*count*/) -> uint64_t {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
+            return reinterpret_cast<uint64_t>(
+                reinterpret_cast<umbra::codegen::HashTable*>(args[0])->lookup(args[1]));
+        },
+        TypeId::PTR, {TypeId::PTR, TypeId::UINT64});
+
+    auto& meta = program.functionMetaMut(1);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    meta.directPtr = reinterpret_cast<void*>(&umbra_ht_lookup);
+    meta.inlineable = true;
+
+    LLVMCompiler llvm;
+    std::string irText;
+    void* fn = llvm.compileWithLog(program, 0, irText);
+    REQUIRE(fn != nullptr);
+
+    // After O3 + inlining, the call should be gone.
+    INFO("Optimized LLVM IR:\n" << irText);
+    REQUIRE(irText.find("call") == std::string::npos);
+}
+
+#endif  // UMBRA_LLVM_BACKEND

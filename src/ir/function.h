@@ -23,6 +23,16 @@ struct FunctionMeta {
     TypeId returnType;
     std::string name;
     std::vector<TypeId> paramTypes;
+
+    /// C ABI function pointer for direct calls (LLVM backend only).
+    /// When non-null, the LLVM backend calls this directly instead of going
+    /// through the umbraCallHost trampoline.
+    void* directPtr = nullptr;
+
+    /// If true, the LLVM backend will inline this function's body (from
+    /// embedded bitcode) at all call sites.  Interpreter and Flying Start
+    /// ignore this flag.
+    bool inlineable = false;
 };
 
 }  // namespace umbra::ir
