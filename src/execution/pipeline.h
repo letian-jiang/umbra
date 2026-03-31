@@ -99,6 +99,10 @@ class PipelineExecutor {
     /// Get the hash table (for inspection/testing after build pipeline).
     [[nodiscard]] codegen::HashTable* hashTable() const;
 
+    /// Find a specific physical operator by kind in the plan tree.
+    static const optimizer::PhysicalOperator* findOperator(const optimizer::PhysicalOperator* root,
+                                                           optimizer::PhysicalNodeKind kind);
+
    private:
     /// Selected execution backend.
     Backend backend_;
@@ -119,10 +123,6 @@ class PipelineExecutor {
     /// Execute pipeline 1 (scan side: agg scan + projection + sort + result).
     void executeScanPipeline(const optimizer::OptimizeResult& result, Table& table,
                              ResultCollector& collector);
-
-    /// Find a specific physical operator by kind in the plan tree.
-    static const optimizer::PhysicalOperator* findOperator(const optimizer::PhysicalOperator* root,
-                                                           optimizer::PhysicalNodeKind kind);
 
     /// Build a chain: [Sort →] [Proj →] source, rooted at ResultWriter.
     /// Sets child pointers and returns {resultWriter, bottomParent, all owned translators}.

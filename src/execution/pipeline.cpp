@@ -215,20 +215,38 @@ std::string PipelineExecutor::generateASM(const optimizer::OptimizeResult& resul
 
     std::string asmText;
     for (size_t i = 0; i < pipelines.size(); ++i) {
-        std::string pipelineAsm;
 #ifdef UMBRA_LLVM_BACKEND
-        if (backend_ == Backend::LLVM) {
+        if (backend_ == Backend::ADAPTIVE) {
+            // Adaptive: show both Flying Start and LLVM output.
+            std::string fsAsm;
+            flying_start::FlyingStartCompiler fsCompiler;
+            fsCompiler.compileWithLog(pipelines[i].program, pipelines[i].funcId, fsAsm);
+            asmText +=
+                "=== Pipeline " + std::to_string(i) + ": " + pipelines[i].name + " (Flying Start) ===\n";
+            asmText += fsAsm;
+            asmText += "\n";
+
+            std::string llvmAsm;
+            llvm_backend::LLVMCompiler llvmCompiler;
+            llvmCompiler.compileWithLog(pipelines[i].program, pipelines[i].funcId, llvmAsm);
+            asmText +=
+                "=== Pipeline " + std::to_string(i) + ": " + pipelines[i].name + " (LLVM O3) ===\n";
+            asmText += llvmAsm;
+        } else if (backend_ == Backend::LLVM) {
+            std::string pipelineAsm;
             llvm_backend::LLVMCompiler llvmCompiler;
             llvmCompiler.compileWithLog(pipelines[i].program, pipelines[i].funcId, pipelineAsm);
+            asmText += "=== Pipeline " + std::to_string(i) + ": " + pipelines[i].name + " ===\n";
+            asmText += pipelineAsm;
         } else
 #endif
         {
+            std::string pipelineAsm;
             flying_start::FlyingStartCompiler jitCompiler;
             jitCompiler.compileWithLog(pipelines[i].program, pipelines[i].funcId, pipelineAsm);
+            asmText += "=== Pipeline " + std::to_string(i) + ": " + pipelines[i].name + " ===\n";
+            asmText += pipelineAsm;
         }
-
-        asmText += "=== Pipeline " + std::to_string(i) + ": " + pipelines[i].name + " ===\n";
-        asmText += pipelineAsm;
         if (i + 1 < pipelines.size()) {
             asmText += "\n";
         }
