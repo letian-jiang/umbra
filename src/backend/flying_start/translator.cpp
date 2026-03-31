@@ -345,8 +345,23 @@ void FlyingStartCompiler::translateFunction(ir::Program& program, ir::FunctionId
                 // Return same-block value slots to the free pool at their last use,
                 // enabling subsequent allocations to reuse them. The location MAP
                 // entry is kept so code emission finds the correct slot offset.
+                //
+                // Special case: when a GEP is deferred, its base and index
+                // operands are not actually consumed at the GEP instruction —
+                // they are consumed later at the load/store that uses the GEP
+                // result.  We must NOT free those operand slots at the GEP,
+                // otherwise the slots get reused by intervening instructions
+                // and the deferred load reads stale values.
+                bool isDeferredGep =
+                    opcode == ir::Opcode::GEP && canDeferGep(program, lsa_, instOff);
+
                 ir::forEachValueArg(inst, [&](ir::IROp op) {
                     if (lsa_.isLastUse(op, preSeq) && lsa_.blockOf(op) == blockOff) {
+                        // Skip freeing base/index operands of deferred GEPs.
+                        if (isDeferredGep &&
+                            (op == inst.arg(0) || op == inst.arg(1))) {
+                            return;
+                        }
                         const auto* loc = regAlloc_.getLocation(op);
                         if (loc != nullptr && loc->kind == LocationKind::STACK) {
                             regAlloc_.freeStackSlot(loc->stackOffset);
