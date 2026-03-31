@@ -6,33 +6,53 @@
 
 ## 1. 测试数据准备
 
-### 1.1 TPC-H dbgen 数据
+### 1.1 用 dbgen 生成 TPC-H 数据
 
-项目使用 `data/` 目录下的 pipe-delimited lineitem 文件：
-
-| 文件 | Scale Factor | 行数 | 大小 |
-|------|-------------|------|------|
-| `data/lineitem.tbl` | SF=0.01 | ~60K | ~7MB |
-| `data/lineitem_sf1.tbl` | SF=1 | ~6M | ~725MB |
-
-UmbraDB shell 默认加载 `lineitem.tbl`。SF=1 需要用符号链接：
+使用 TPC-H 官方 dbgen（位于 `/tmp/tpch-dbgen/`）生成任意 SF 的 lineitem.tbl，统一放在 `/tmp/umbra_sf<N>/` 下：
 
 ```bash
-# 加载 SF=0.01
-./build/src/umbra --data data
+# 生成指定 SF 的 lineitem.tbl
+generate_lineitem() {
+  local sf=$1
+  local dir="/tmp/umbra_sf${sf}"
+  mkdir -p "$dir"
+  cd /tmp/tpch-dbgen && ./dbgen -s "$sf" -T L -f
+  mv /tmp/tpch-dbgen/lineitem.tbl "$dir/"
+  echo "Generated $dir/lineitem.tbl (SF=$sf)"
+}
 
-# 加载 SF=1
-mkdir -p /tmp/umbra_sf1
-ln -sf $(pwd)/data/lineitem_sf1.tbl /tmp/umbra_sf1/lineitem.tbl
-./build/src/umbra --data /tmp/umbra_sf1
+# 常用 SF
+generate_lineitem 0.01   # ~60K 行, ~7MB
+generate_lineitem 0.1    # ~600K 行, ~72MB
+generate_lineitem 1      # ~6M 行, ~725MB
+generate_lineitem 10     # ~60M 行, ~7.2GB
 ```
 
-### 1.2 DuckDB 数据加载
+> **注意**：dbgen 必须在 `/tmp/tpch-dbgen/` 目录下执行（依赖同目录的 `dists.dss` 文件），`-T L` 只生成 lineitem 表，`-f` 覆盖已有文件。
 
-DuckDB 直接从 .tbl 文件读取，不需要预加载：
+各 SF 数据规模参考：
+
+| SF | 行数 | lineitem.tbl 大小 | 特征 |
+|----|------|-------------------|------|
+| 0.01 | ~60K | ~7MB | fits L2, 编译延迟主导 |
+| 0.1 | ~600K | ~72MB | fits L3 |
+| 1 | ~6M | ~725MB | far > L3, 执行吞吐主导 |
+| 10 | ~60M | ~7.2GB | 大规模压测 |
+
+### 1.2 加载到 UmbraDB
+
+```bash
+# 指定 SF 目录即可
+SF=0.01
+./build/src/umbra --data /tmp/umbra_sf${SF}
+```
+
+### 1.3 DuckDB 数据加载
+
+DuckDB 从生成好的 .tbl 文件加载到内存表，之后查询纯内存执行：
 
 ```sql
-CREATE TABLE lineitem AS SELECT * FROM read_csv('data/lineitem.tbl',
+CREATE TABLE lineitem AS SELECT * FROM read_csv('/tmp/umbra_sf1/lineitem.tbl',
   delim='|', header=false,
   columns={
     'l_orderkey':'INTEGER','l_partkey':'INTEGER','l_suppkey':'INTEGER',
@@ -43,6 +63,8 @@ CREATE TABLE lineitem AS SELECT * FROM read_csv('data/lineitem.tbl',
     'l_shipinstruct':'VARCHAR','l_shipmode':'VARCHAR','l_comment':'VARCHAR'
   });
 ```
+
+无参启动 `duckdb`（即 `:memory:` 模式），数据加载在计时前完成，查询纯内存执行。
 
 ---
 
@@ -140,8 +162,10 @@ SELECT ... FROM lineitem ...;" | duckdb
 
 | SF | 行数 | 数据量 | 关注点 |
 |----|------|--------|--------|
-| 0.01 | 60K | ~3.4MB (fits L2) | 编译延迟占比，小数据最优 backend |
-| 1 | 6M | ~336MB (far > L3) | 执行吞吐，大数据最优 backend |
+| 0.01 | 60K | ~7MB (fits L2) | 编译延迟占比，小数据最优 backend |
+| 0.1 | 600K | ~72MB (fits L3) | 编译/执行平衡点 |
+| 1 | 6M | ~725MB (far > L3) | 执行吞吐，大数据最优 backend |
+| 10 | 60M | ~7.2GB | 大规模压测，纯吞吐对比 |
 
 ### 3.3 核心指标
 
@@ -171,6 +195,8 @@ Adaptive 额外指标：
 
 ### 4.1 全 backend EXPLAIN PROFILE
 
+所有 warmup + hot run 在**同一个进程**内完成（数据加载一次，查询多次）：
+
 ```bash
 Q1="SELECT l_returnflag, l_linestatus, SUM(l_quantity), SUM(l_extendedprice), \
 SUM(l_extendedprice * (1 - l_discount)), \
@@ -179,18 +205,21 @@ AVG(l_quantity), AVG(l_extendedprice), AVG(l_discount), COUNT(*) \
 FROM lineitem WHERE l_shipdate <= DATE '1998-12-01' - INTERVAL '90' DAY \
 GROUP BY l_returnflag, l_linestatus ORDER BY l_returnflag, l_linestatus;"
 
-DATA_DIR=data           # SF=0.01
-# DATA_DIR=/tmp/umbra_sf1  # SF=1
+SF=0.01                          # 改为 0.1 / 1 / 10 测试其他 SF
+DATA_DIR=/tmp/umbra_sf${SF}
 
+WARMUP=3
 RUNS=7
 
 for backend in interpreter flying-start llvm adaptive; do
   echo "=== $backend ==="
-  for i in $(seq 1 $RUNS); do
-    echo -e ".backend $backend\nEXPLAIN PROFILE $Q1" \
-      | ./build/src/umbra --data $DATA_DIR 2>&1 \
-      | grep -E "^Pipeline 0:|^Total|morsels via"
-  done
+  # 构建单进程输入：warmup 查询（无 EXPLAIN PROFILE）+ hot run 查询
+  {
+    echo ".backend $backend"
+    for i in $(seq 1 $WARMUP); do echo "$Q1"; done
+    for i in $(seq 1 $RUNS); do echo "EXPLAIN PROFILE $Q1"; done
+  } | ./build/src/umbra --data $DATA_DIR 2>&1 \
+    | grep -E "^Pipeline 0:|^Total|morsels via"
 done
 ```
 
@@ -198,21 +227,27 @@ done
 
 ```bash
 for ms in 500 1000 2000 5000 10000 20000 50000 100000; do
-  times=""
-  for i in $(seq 1 $RUNS); do
-    t=$(echo -e ".backend adaptive\n.morsel $ms\n.timer on\n$Q1" \
-      | ./build/src/umbra --data $DATA_DIR 2>&1 \
-      | grep "rows" | grep -oP '[\d.]+(?= ms)')
-    times="$times $t"
-  done
-  echo "morsel=$ms: $times"
+  {
+    echo ".backend adaptive"
+    echo ".morsel $ms"
+    # Warmup（无 timer）
+    for i in $(seq 1 $WARMUP); do echo "$Q1"; done
+    # Hot runs（开启 timer）
+    echo ".timer on"
+    for i in $(seq 1 $RUNS); do echo "$Q1"; done
+  } | ./build/src/umbra --data $DATA_DIR 2>&1 \
+    | grep -oP '[\d.]+(?= ms)' \
+    | paste -sd' ' \
+    | xargs -I{} echo "morsel=$ms: {}"
 done
 ```
 
 ### 4.3 DuckDB 对比
 
+DuckDB 同样在**同一个进程**内完成所有 warmup + hot run。从 .tbl 文件加载到内存表后，查询纯内存执行：
+
 ```bash
-DUCKDB_LOAD="CREATE TABLE lineitem AS SELECT * FROM read_csv('$DATA_DIR/lineitem.tbl',
+DUCKDB_LOAD="CREATE TABLE lineitem AS SELECT * FROM read_csv('${DATA_DIR}/lineitem.tbl',
   delim='|', header=false,
   columns={'l_orderkey':'INTEGER','l_partkey':'INTEGER','l_suppkey':'INTEGER',
     'l_linenumber':'INTEGER','l_quantity':'DECIMAL(15,2)',
@@ -228,47 +263,28 @@ AVG(l_quantity), AVG(l_extendedprice), AVG(l_discount), COUNT(*) \
 FROM lineitem WHERE l_shipdate <= DATE '1998-12-01' - INTERVAL 90 DAY \
 GROUP BY l_returnflag, l_linestatus ORDER BY l_returnflag, l_linestatus;"
 
-# 单线程
-for i in $(seq 1 $RUNS); do
-  echo "SET threads TO 1; $DUCKDB_LOAD
-.timer on
-$DUCKDB_Q1" | duckdb 2>&1 | grep "Run Time"
-done
-
-# 多线程
-for i in $(seq 1 $RUNS); do
-  echo "$DUCKDB_LOAD
-.timer on
-$DUCKDB_Q1" | duckdb 2>&1 | grep "Run Time"
+for mode in "单线程:SET threads TO 1;" "多线程:"; do
+  label="${mode%%:*}"
+  setup="${mode#*:}"
+  echo "=== DuckDB $label ==="
+  {
+    echo "$setup"
+    echo "$DUCKDB_LOAD"
+    # Warmup（无 timer）
+    for i in $(seq 1 $WARMUP); do echo "$DUCKDB_Q1"; done
+    # Hot runs（开启 timer）
+    echo ".timer on"
+    for i in $(seq 1 $RUNS); do echo "$DUCKDB_Q1"; done
+  } | duckdb 2>&1 | grep "Run Time"
 done
 ```
 
 ---
 
-## 5. 分析要点
+## 5. 统计方法
 
-### 5.1 Backend 选择
-
-- **SF=0.01**：Flying Start 最优（编译 < 0.3ms，LLVM 编译 ~17ms 完全浪费）
-- **SF=1**：Adaptive ≈ LLVM（LLVM 编译被 FS 执行掩盖），均远快于 FS
-
-### 5.2 Adaptive 分析
-
-关注 LLVM 异步编译时间与 FS morsel 执行时间的关系：
-
-- `switch_morsel ≈ llvm_compile_ms / fs_per_morsel_ms`
-- 切换越早，更多行由快速 LLVM 处理
-- Morsel size 在 1K-50K 范围内对总时间影响 <5%
-
-### 5.3 DuckDB 对比
-
-DuckDB 使用向量化解释（非 JIT），提供 baseline 参考：
-
-- 单线程对比 Flying Start（同为非 O3 优化执行）
-- 多线程展示并行化收益（我们 MVP 为单线程）
-
-### 5.4 统计方法
-
-- 每组运行 7 次，取中位数（排除 warmup 异常和 GC/调度干扰）
+- 所有 warmup + hot run 在**同一个进程**内完成：数据只加载一次，避免重复磁盘 I/O 和进程启动开销
+- 先运行 3 次 warmup 查询（丢弃结果），预热进程内 icache / dcache / branch predictor / JIT 缓存
+- 再运行 7 次 hot run，取中位数作为代表值（排除调度等尾部干扰）
 - 报告关键百分位：median, min, max
 - 对比时使用 ns/row 归一化不同数据量
