@@ -229,9 +229,8 @@ TEST_CASE("Pipeline: build pipeline aggregates correctly", "[pipeline]") {
     CodegenContext cg;
     setActiveContext(&cg);
 
-    auto funcId =
-        cg.createFunction("pipeline_build", TypeId::VOID,
-                          {TypeId::PTR, TypeId::INT64, TypeId::INT64});
+    auto funcId = cg.createFunction("pipeline_build", TypeId::VOID,
+                                    {TypeId::PTR, TypeId::INT64, TypeId::INT64});
     CompilationContext ctx(cg);
     ctx.runtimeCtx = cg.getArg<Ptr<Int8>>(0);
     ctx.startRow = cg.getArg<Int64>(1);
@@ -532,6 +531,140 @@ TEST_CASE("Pipeline: all rows in single group", "[pipeline]") {
     CHECK(collector.rows()[0].values[3] == 3);     // count = 3
 }
 
+// ── Test: Adaptive execution produces correct results ────────────────────────
+
+TEST_CASE("Pipeline: adaptive execution matches Flying Start results", "[pipeline]") {
+    auto catalog = makeTestCatalog();
+    auto table = makeTestLineitemTable();
+    const auto* tableDef = catalog.lookupTable("lineitem");
+    REQUIRE(tableDef != nullptr);
+
+    // Build identical physical plans for both backends.
+    PhysicalTableScan scan(tableDef);
+    scan.columnIndices = {4, 5, 6, 7, 8, 9, 10};
+
+    BoundColumnRef shipDateCol(0, 10, SQLType::date(), "l_shipdate");
+    BoundLiteral dateThreshold(SQLType::date(), -400);
+    BoundBinaryExpr filterExpr(parser::BinaryOp::LE, &shipDateCol, &dateThreshold,
+                               SQLType::boolean());
+    scan.filter = &filterExpr;
+
+    PhysicalHashAggregate agg(&scan);
+    BoundColumnRef flagCol(0, 8, SQLType{SQLTypeId::BOOLEAN}, "l_returnflag");
+    BoundColumnRef statusCol(0, 9, SQLType{SQLTypeId::BOOLEAN}, "l_linestatus");
+    agg.groupByKeys = {&flagCol, &statusCol};
+
+    BoundColumnRef qtyCol(0, 4, SQLType::decimal(15, 2), "l_quantity");
+    BoundColumnRef priceCol(0, 5, SQLType::decimal(15, 2), "l_extendedprice");
+    BoundAggCall sumQty(AggFunc::SUM, &qtyCol, SQLType::decimal(15, 2));
+    BoundAggCall sumPrice(AggFunc::SUM, &priceCol, SQLType::decimal(15, 2));
+    BoundAggCall countStar(AggFunc::COUNT, nullptr, SQLType::bigint());
+    agg.aggregates = {&sumQty, &sumPrice, &countStar};
+
+    PhysicalProjection proj(&agg);
+    BoundGroupRef gref0(0, SQLType{SQLTypeId::BOOLEAN});
+    BoundGroupRef gref1(1, SQLType{SQLTypeId::BOOLEAN});
+    BoundAggRef aref0(0, SQLType::bigint());
+    BoundAggRef aref1(1, SQLType::bigint());
+    BoundAggRef aref2(2, SQLType::bigint());
+    proj.expressions = {&gref0, &gref1, &aref0, &aref1, &aref2};
+    proj.aliases = {"l_returnflag", "l_linestatus", "sum_qty", "sum_base_price", "count_order"};
+
+    PhysicalSort sort(&proj);
+    BoundGroupRef sortRef0(0, SQLType{SQLTypeId::BOOLEAN});
+    BoundGroupRef sortRef1(1, SQLType{SQLTypeId::BOOLEAN});
+    sort.orderBy = {{&sortRef0, true}, {&sortRef1, true}};
+
+    OptimizeResult result;
+    result.root = &sort;
+    result.pipelines = Optimizer::decomposePipelines(&sort);
+
+    // Execute with adaptive backend (morsel size 2 to force multiple morsels).
+    ResultCollector collector;
+    PipelineExecutor executor(Backend::ADAPTIVE, 2);
+    executor.enableProfiling();
+    executor.execute(result, table, collector);
+
+    // Same expected results as Flying Start test.
+    REQUIRE(collector.numRows() == 2);
+    CHECK(collector.rows()[0].values[0] == 65);     // A
+    CHECK(collector.rows()[0].values[1] == 70);     // F
+    CHECK(collector.rows()[0].values[2] == 6000);   // sum_qty
+    CHECK(collector.rows()[0].values[3] == 60000);  // sum_base_price
+    CHECK(collector.rows()[0].values[4] == 3);      // count
+    CHECK(collector.rows()[1].values[0] == 78);     // N
+    CHECK(collector.rows()[1].values[1] == 70);     // F
+    CHECK(collector.rows()[1].values[2] == 7500);   // sum_qty
+    CHECK(collector.rows()[1].values[3] == 75000);  // sum_base_price
+    CHECK(collector.rows()[1].values[4] == 3);      // count
+
+    // Check profiling: adaptive should show morsel counts.
+    const auto& profiles = executor.profiles();
+    REQUIRE(profiles.size() == 2);
+    // Build pipeline: 6 rows, morsel size 2 → 3 morsels.
+    CHECK(profiles[0].totalMorsels == 3);
+    CHECK(profiles[0].fsMorsels + profiles[0].llvmMorsels == profiles[0].totalMorsels);
+    // Scan pipeline: htCapacity is small → likely 1 morsel.
+    CHECK(profiles[1].totalMorsels >= 1);
+}
+
+// ── Test: Adaptive execution with morsel size 1 ─────────────────────────────
+
+TEST_CASE("Pipeline: adaptive morsel size 1 (extreme granularity)", "[pipeline]") {
+    auto catalog = makeTestCatalog();
+    auto table = makeTestLineitemTable();
+    const auto* tableDef = catalog.lookupTable("lineitem");
+    REQUIRE(tableDef != nullptr);
+
+    PhysicalTableScan scan(tableDef);
+    scan.columnIndices = {4, 5, 6, 7, 8, 9, 10};
+
+    BoundColumnRef shipDateCol(0, 10, SQLType::date(), "l_shipdate");
+    BoundLiteral dateThreshold(SQLType::date(), -400);
+    BoundBinaryExpr filterExpr(parser::BinaryOp::LE, &shipDateCol, &dateThreshold,
+                               SQLType::boolean());
+    scan.filter = &filterExpr;
+
+    PhysicalHashAggregate agg(&scan);
+    BoundColumnRef flagCol(0, 8, SQLType{SQLTypeId::BOOLEAN}, "l_returnflag");
+    BoundColumnRef statusCol(0, 9, SQLType{SQLTypeId::BOOLEAN}, "l_linestatus");
+    agg.groupByKeys = {&flagCol, &statusCol};
+
+    BoundColumnRef qtyCol(0, 4, SQLType::decimal(15, 2), "l_quantity");
+    BoundAggCall sumQty(AggFunc::SUM, &qtyCol, SQLType::decimal(15, 2));
+    BoundAggCall countStar(AggFunc::COUNT, nullptr, SQLType::bigint());
+    agg.aggregates = {&sumQty, &countStar};
+
+    PhysicalProjection proj(&agg);
+    BoundGroupRef gref0(0, SQLType{SQLTypeId::BOOLEAN});
+    BoundGroupRef gref1(1, SQLType{SQLTypeId::BOOLEAN});
+    BoundAggRef aref0(0, SQLType::bigint());
+    BoundAggRef aref1(1, SQLType::bigint());
+    proj.expressions = {&gref0, &gref1, &aref0, &aref1};
+    proj.aliases = {"flag", "status", "sum_qty", "count"};
+
+    PhysicalSort sort(&proj);
+    BoundGroupRef sortRef0(0, SQLType{SQLTypeId::BOOLEAN});
+    sort.orderBy = {{&sortRef0, true}};
+
+    OptimizeResult result;
+    result.root = &sort;
+    result.pipelines = Optimizer::decomposePipelines(&sort);
+
+    // Morsel size = 1 → 6 morsels for 6 rows.
+    ResultCollector collector;
+    PipelineExecutor executor(Backend::ADAPTIVE, 1);
+    executor.enableProfiling();
+    executor.execute(result, table, collector);
+
+    REQUIRE(collector.numRows() == 2);
+    CHECK(collector.rows()[0].values[2] == 6000);  // Group A sum_qty
+    CHECK(collector.rows()[1].values[2] == 7500);  // Group N sum_qty
+
+    const auto& profiles = executor.profiles();
+    CHECK(profiles[0].totalMorsels == 6);  // 6 rows / morsel size 1
+}
+
 // ── Test: Pipeline with no matching rows (empty result) ──────────────────────
 
 TEST_CASE("Pipeline: filter rejects all rows", "[pipeline]") {
@@ -569,9 +702,8 @@ TEST_CASE("Pipeline: filter rejects all rows", "[pipeline]") {
     CodegenContext cg;
     setActiveContext(&cg);
 
-    auto funcId =
-        cg.createFunction("test_scan_filter", TypeId::VOID,
-                          {TypeId::PTR, TypeId::INT64, TypeId::INT64});
+    auto funcId = cg.createFunction("test_scan_filter", TypeId::VOID,
+                                    {TypeId::PTR, TypeId::INT64, TypeId::INT64});
     CompilationContext ctx(cg);
     ctx.runtimeCtx = cg.getArg<Ptr<Int8>>(0);
     ctx.startRow = cg.getArg<Int64>(1);

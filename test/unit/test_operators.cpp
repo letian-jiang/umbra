@@ -87,7 +87,8 @@ TEST_CASE("TableScan: scan all rows without filter", "[operators]") {
     CodegenContext cg;
     setActiveContext(&cg);
 
-    auto funcId = cg.createFunction("test_scan", TypeId::VOID, {TypeId::PTR, TypeId::INT64, TypeId::INT64});
+    auto funcId =
+        cg.createFunction("test_scan", TypeId::VOID, {TypeId::PTR, TypeId::INT64, TypeId::INT64});
     CompilationContext ctx(cg);
     ctx.runtimeCtx = cg.getArg<Ptr<Int8>>(0);
     ctx.startRow = cg.getArg<Int64>(1);
@@ -155,7 +156,8 @@ TEST_CASE("TableScan: scan with filter predicate", "[operators]") {
     CodegenContext cg;
     setActiveContext(&cg);
 
-    auto funcId = cg.createFunction("test_scan_filter", TypeId::VOID, {TypeId::PTR, TypeId::INT64, TypeId::INT64});
+    auto funcId = cg.createFunction("test_scan_filter", TypeId::VOID,
+                                    {TypeId::PTR, TypeId::INT64, TypeId::INT64});
     CompilationContext ctx(cg);
     ctx.runtimeCtx = cg.getArg<Ptr<Int8>>(0);
     ctx.startRow = cg.getArg<Int64>(1);
@@ -337,7 +339,8 @@ TEST_CASE("TableScan: single column scan", "[operators]") {
     CodegenContext cg;
     setActiveContext(&cg);
 
-    auto funcId = cg.createFunction("test_single_col", TypeId::VOID, {TypeId::PTR, TypeId::INT64, TypeId::INT64});
+    auto funcId = cg.createFunction("test_single_col", TypeId::VOID,
+                                    {TypeId::PTR, TypeId::INT64, TypeId::INT64});
     CompilationContext ctx(cg);
     ctx.runtimeCtx = cg.getArg<Ptr<Int8>>(0);
     ctx.startRow = cg.getArg<Int64>(1);

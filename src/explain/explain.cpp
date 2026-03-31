@@ -294,12 +294,24 @@ std::string runExplain(ExplainLevel level, const std::string& sql, const Catalog
                 break;
         }
         out << "Profile (backend: " << backendName << "):\n";
-        out << "                  plan    codegen  compile  execute  total\n";
+        if (backend == execution::Backend::ADAPTIVE) {
+            out << "                  plan    codegen  compile(FS) compile(LLVM)  execute  total\n";
+        } else {
+            out << "                  plan    codegen  compile  execute  total\n";
+        }
         for (size_t i = 0; i < profiles.size(); ++i) {
             const auto& p = profiles[i];
             double pTotal = p.codegenMs + p.compileMs + p.executeMs;
             out << "Pipeline " << i << ":       -       " << p.codegenMs << "ms   " << p.compileMs
-                << "ms   " << p.executeMs << "ms   " << pTotal << "ms";
+                << "ms   ";
+            if (backend == execution::Backend::ADAPTIVE) {
+                if (p.llvmCompileMs > 0.0) {
+                    out << p.llvmCompileMs << "ms      ";
+                } else {
+                    out << "(bg, unused)   ";
+                }
+            }
+            out << p.executeMs << "ms   " << pTotal << "ms";
             if (p.totalMorsels > 0) {
                 out << "  (" << p.totalMorsels << " morsels)";
             }
@@ -307,6 +319,26 @@ std::string runExplain(ExplainLevel level, const std::string& sql, const Catalog
         }
         out << "Total:           " << planMs << "ms   " << totalCodegen << "ms   " << totalCompile
             << "ms   " << totalExecute << "ms   " << totalMs << "ms\n";
+
+        // Adaptive execution morsel breakdown.
+        if (backend == execution::Backend::ADAPTIVE) {
+            out << "\n";
+            for (size_t i = 0; i < profiles.size(); ++i) {
+                const auto& p = profiles[i];
+                if (p.totalMorsels > 0) {
+                    out << "  Pipeline " << i << ": " << p.fsMorsels << "/" << p.totalMorsels
+                        << " morsels via Flying Start, " << p.llvmMorsels << "/" << p.totalMorsels
+                        << " via LLVM.";
+                    if (p.switchMorsel > 0) {
+                        out << " Switch at morsel " << p.switchMorsel << ".";
+                    } else {
+                        out << " LLVM detached.";
+                    }
+                    out << "\n";
+                }
+            }
+        }
+
         out << "\nResult: " << collector.numRows() << " rows\n";
     }
 

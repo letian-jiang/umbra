@@ -348,8 +348,7 @@ Ptr<Int8> HashTableCodegen::findOrInsert(CodegenContext& ctx, Ptr<Int8> tablePtr
     return finalResult;
 }
 
-void HashTableCodegen::scan(CodegenContext& ctx, Ptr<Int8> tablePtr, Int64 startSlot,
-                            Int64 endSlot,
+void HashTableCodegen::scan(CodegenContext& ctx, Ptr<Int8> tablePtr, Int64 startSlot, Int64 endSlot,
                             const std::function<void(Ptr<Int8>)>& callback) {
     auto slotBuf = ctx.call<Ptr<Int8>>(getSlotBufferFn_, tablePtr);
     auto stride = ctx.call<UInt64>(getSlotStrideFn_, tablePtr);

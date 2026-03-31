@@ -314,4 +314,71 @@ TEST_CASE("Benchmark: EXPLAIN PROFILE Q1 SF=0.01", "[perf]") {
         CHECK(output.find("Result:") != std::string::npos);
     }
 #endif
+
+    SECTION("adaptive") {
+        std::string output = explain::runExplain(explain::ExplainLevel::PROFILE, Q1_SQL, catalog,
+                                                 table, execution::Backend::ADAPTIVE);
+        std::cerr << "\n=== EXPLAIN PROFILE Q1 (adaptive, " << NUM_ROWS << " rows) ===\n";
+        auto pos = output.find("Profile");
+        if (pos != std::string::npos) {
+            std::cerr << output.substr(pos);
+        }
+        CHECK(output.find("Result:") != std::string::npos);
+        CHECK(output.find("morsels via Flying Start") != std::string::npos);
+    }
+}
+
+TEST_CASE("Benchmark: adaptive Q1 correctness vs Flying Start", "[perf]") {
+    constexpr int NUM_ROWS = 60175;
+    auto catalog = makeBenchCatalog();
+    auto table = makeBenchTable(NUM_ROWS);
+
+    auto parseResult = parser::Parser::parse(Q1_SQL);
+    binder::Binder binder(catalog);
+    auto bindResult = binder.bind(*parseResult.stmt);
+    optimizer::Optimizer opt;
+    auto optResult = opt.optimize(bindResult);
+
+    // Execute with Flying Start (reference).
+    ResultCollector fsCollector;
+    PipelineExecutor fsExecutor(Backend::FLYING_START);
+    fsExecutor.execute(optResult, table, fsCollector);
+
+    // Execute with Adaptive.
+    ResultCollector adaptiveCollector;
+    PipelineExecutor adaptiveExecutor(Backend::ADAPTIVE);
+    adaptiveExecutor.enableProfiling();
+    adaptiveExecutor.execute(optResult, table, adaptiveCollector);
+
+    // Compare results: same number of rows, same values.
+    REQUIRE(adaptiveCollector.numRows() == fsCollector.numRows());
+    for (uint32_t r = 0; r < fsCollector.numRows(); ++r) {
+        for (size_t c = 0; c < fsCollector.rows()[r].values.size(); ++c) {
+            CHECK(adaptiveCollector.rows()[r].values[c] == fsCollector.rows()[r].values[c]);
+        }
+    }
+
+    // Verify profiling data is populated.
+    const auto& profiles = adaptiveExecutor.profiles();
+    REQUIRE(profiles.size() == 2);
+    // Build pipeline should have multiple morsels (60175 rows / 10000 = 7 morsels).
+    CHECK(profiles[0].totalMorsels == 7);
+    CHECK(profiles[0].fsMorsels + profiles[0].llvmMorsels == profiles[0].totalMorsels);
+    CHECK(profiles[0].fsMorsels >= 1);  // At least first morsel is FS.
+    // Scan pipeline: small htCapacity → 1 morsel.
+    CHECK(profiles[1].totalMorsels >= 1);
+
+    std::cerr << "\n=== Adaptive Q1 Profiling (SF=0.01, " << NUM_ROWS << " rows) ===\n";
+    std::cerr << "  Pipeline 0 (build): " << profiles[0].totalMorsels << " morsels total, "
+              << profiles[0].fsMorsels << " FS, " << profiles[0].llvmMorsels << " LLVM";
+    if (profiles[0].switchMorsel > 0) {
+        std::cerr << ", switch at morsel " << profiles[0].switchMorsel;
+    }
+    std::cerr << "\n";
+    std::cerr << "  Pipeline 0: codegen=" << profiles[0].codegenMs
+              << "ms, compile(FS)=" << profiles[0].compileMs
+              << "ms, llvm=" << profiles[0].llvmCompileMs << "ms, exec=" << profiles[0].executeMs
+              << "ms\n";
+    std::cerr << "  Pipeline 1 (scan): " << profiles[1].totalMorsels << " morsels total, "
+              << profiles[1].fsMorsels << " FS, " << profiles[1].llvmMorsels << " LLVM\n";
 }

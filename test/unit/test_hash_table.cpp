@@ -401,7 +401,8 @@ TEST_CASE("HashTableCodegen: scan iterates all entries", "[hash_table]") {
     setActiveContext(&ctx);
     codegen.registerHostFunctions(ctx);
 
-    // fn(tablePtr, outPtr, startSlot, endSlot): scan the table, sum all agg values, write to outPtr.
+    // fn(tablePtr, outPtr, startSlot, endSlot): scan the table, sum all agg values, write to
+    // outPtr.
     auto fn = ctx.createFunction("scan_sum", TypeId::VOID,
                                  {TypeId::PTR, TypeId::PTR, TypeId::INT64, TypeId::INT64});
     auto tablePtr = ctx.getArg<Ptr<Int8>>(0);

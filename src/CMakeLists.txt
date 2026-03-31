@@ -33,6 +33,7 @@ add_library(umbra_lib STATIC
     codegen/operators/result_writer.cpp
     execution/result_collector.cpp
     execution/pipeline.cpp
+    execution/async_compiler.cpp
     explain/explain.cpp
     shell/shell.cpp
     shell/formatter.cpp
