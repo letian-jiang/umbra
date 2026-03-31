@@ -1,35 +1,30 @@
 #include "execution/async_compiler.h"
 
 #include <chrono>
-#include <future>
+
+#include "execution/compile_thread_pool.h"
 
 namespace umbra::execution {
-
-AsyncCompiler::~AsyncCompiler() {
-    // Wait for background thread to finish if still running.
-    // This ensures the LLVMCompiler instance isn't destroyed while in use.
-    if (future_.valid()) {
-        future_.wait();
-    }
-}
 
 void AsyncCompiler::startAsync(std::shared_ptr<ir::Program> program, ir::FunctionId funcId) {
 #ifdef UMBRA_LLVM_BACKEND
     started_ = true;
-    program_ = std::move(program);
+    state_ = std::make_shared<SharedState>();
+    state_->program = std::move(program);
 
-    // Launch LLVM compilation on a background thread.
-    future_ = std::async(std::launch::async, [this, funcId]() {
+    // Submit to the persistent thread pool — no pthread_create overhead.
+    // The lambda captures shared_ptr<SharedState>, keeping it alive until done.
+    CompileThreadPool::instance().submit([state = state_, funcId]() {
         auto start = std::chrono::high_resolution_clock::now();
         try {
-            compiler_ = std::make_unique<llvm_backend::LLVMCompiler>();
-            jitFunc_ = compiler_->compile(*program_, funcId);
+            state->compiler = std::make_unique<llvm_backend::LLVMCompiler>();
+            state->jitFunc = state->compiler->compile(*state->program, funcId);
             auto end = std::chrono::high_resolution_clock::now();
-            compileMs_ = std::chrono::duration<double, std::milli>(end - start).count();
+            state->compileMs = std::chrono::duration<double, std::milli>(end - start).count();
             // Signal ready — the execution thread polls this at morsel boundaries.
-            ready_.store(true, std::memory_order_release);
+            state->ready.store(true, std::memory_order_release);
         } catch (...) {
-            failed_ = true;
+            state->failed = true;
             // Compilation failed — execution continues with Flying Start.
         }
     });

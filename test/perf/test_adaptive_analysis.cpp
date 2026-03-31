@@ -44,7 +44,9 @@ using namespace umbra::execution;
 
 namespace {
 
-auto now() { return std::chrono::high_resolution_clock::now(); }
+auto now() {
+    return std::chrono::high_resolution_clock::now();
+}
 
 double ms(std::chrono::high_resolution_clock::time_point a,
           std::chrono::high_resolution_clock::time_point b) {
@@ -137,16 +139,17 @@ void dumpHT(const codegen::HashTable& ht, const char* label) {
     uint32_t stride = ht.slotStride();
     for (uint32_t i = 0; i < ht.capacity(); ++i) {
         uint8_t* slot = ht.slotBuffer() + static_cast<uint64_t>(i) * stride;
-        if (slot[0] == 0) continue;  // not occupied
+        if (slot[0] == 0)
+            continue;  // not occupied
         uint64_t hash = 0;
         std::memcpy(&hash, slot + 1, 8);
         uint8_t* payload = slot + 9;
         // First 2 bytes of payload = key1 (CHAR(1)), key2 (CHAR(1))
         std::cerr << "     slot " << i << ": hash=0x" << std::hex << hash << std::dec
-                  << " key1=" << static_cast<int>(payload[0])
-                  << "(" << static_cast<char>(payload[0]) << ")"
-                  << " key2=" << static_cast<int>(payload[1])
-                  << "(" << static_cast<char>(payload[1]) << ")\n";
+                  << " key1=" << static_cast<int>(payload[0]) << "("
+                  << static_cast<char>(payload[0]) << ")"
+                  << " key2=" << static_cast<int>(payload[1]) << "("
+                  << static_cast<char>(payload[1]) << ")\n";
     }
 }
 
@@ -338,8 +341,8 @@ TEST_CASE("Adaptive analysis: isolate LLVM morsel overhead", "[perf]") {
             fsT.push_back(fV);
             llvmT.push_back(lV);
             times.push_back(ms(t0, t1));
-            sw.push_back(mc - static_cast<uint32_t>((totalItems - cursor + MORSEL_SIZE - 1) /
-                                                     MORSEL_SIZE));
+            sw.push_back(
+                mc - static_cast<uint32_t>((totalItems - cursor + MORSEL_SIZE - 1) / MORSEL_SIZE));
         }
         std::sort(sw.begin(), sw.end());
         std::cerr << "D. Full adaptive:                        " << median(times)

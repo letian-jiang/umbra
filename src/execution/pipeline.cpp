@@ -221,8 +221,8 @@ std::string PipelineExecutor::generateASM(const optimizer::OptimizeResult& resul
             std::string fsAsm;
             flying_start::FlyingStartCompiler fsCompiler;
             fsCompiler.compileWithLog(pipelines[i].program, pipelines[i].funcId, fsAsm);
-            asmText +=
-                "=== Pipeline " + std::to_string(i) + ": " + pipelines[i].name + " (Flying Start) ===\n";
+            asmText += "=== Pipeline " + std::to_string(i) + ": " + pipelines[i].name +
+                       " (Flying Start) ===\n";
             asmText += fsAsm;
             asmText += "\n";
 

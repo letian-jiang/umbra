@@ -133,19 +133,20 @@ Executor 传入 `(ctx, 0, htCapacity)` 或 morsel 范围。`htCapacity` 通过 `
 ### 3.1 编译时序
 
 ```
-Timeline (Q1, SF=0.01):
+Timeline (Q1, SF=0.01, pool warm):
 
 t=0.00ms  Codegen starts (Tidy Tuples → IR)
 t=0.02ms  Codegen done
-t=0.02ms  Flying Start compile (fast, ~0.15ms)
-t=0.02ms  LLVM compile starts (background thread)
-t=0.17ms  Flying Start ready → begin executing morsels
-t=0.17ms  Morsel 0 [0, 10K) via Flying Start
-t=0.22ms  Morsel 1 [10K, 20K) via Flying Start
+t=0.02ms  LLVM compile submitted to pool (near-zero: mutex lock + notify)
+t=0.02ms  Flying Start compile (fast, ~0.19ms)
+t=0.21ms  Flying Start ready → begin executing morsels
+t=0.21ms  Morsel 0 [0, 10K) via Flying Start
+t=0.37ms  Morsel 1 [10K, 20K) via Flying Start
   ...
-t=0.47ms  Morsel 5 done — all rows processed via Flying Start
-          (LLVM still compiling, ~5-20ms total)
-t=0.47ms  Pipeline 0 complete, return immediately. LLVM thread detached.
+t=1.35ms  Morsel 6 done — all 60K rows processed via Flying Start
+          (LLVM still compiling in pool, ~13ms total)
+t=1.35ms  Pipeline 0 complete. ~AsyncCompiler() releases shared_ptr, non-blocking.
+          Pool worker continues compilation, cleans up when done.
 ```
 
 ```
@@ -161,45 +162,76 @@ t=5.20ms  Morsel 10+ via LLVM (faster per-morsel)
 t=48ms    All 600 morsels done (mix of FS + LLVM)
 ```
 
-### 3.2 AsyncCompiler
+### 3.2 CompileThreadPool
 
-封装后台 LLVM 编译的状态机：
+常驻线程池，大小 `hardware_concurrency()`（通常 = `nproc`）。Worker 线程在 `condition_variable` 上等待任务，提交只需 notify（无 `pthread_create` 开销）。
+
+```cpp
+class CompileThreadPool {
+public:
+    static CompileThreadPool& instance();  // Meyer's singleton, lazy init
+    void submit(std::function<void()> task);
+    ~CompileThreadPool();  // shutdown flag + notify_all + join
+
+private:
+    explicit CompileThreadPool(unsigned numThreads);
+    std::vector<std::thread> workers_;
+    std::queue<std::function<void()>> tasks_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool shutdown_{false};
+};
+```
+
+- Shell 启动时调用 `CompileThreadPool::instance()` 预热（`Shell` 构造函数），避免首个查询承担线程创建开销
+- 冷启动开销 ~1ms（创建 nproc 个线程），热启动 ~0（只是 mutex lock + notify）
+- Worker 线程空闲时仅消耗虚拟地址空间（栈未触及不占物理内存），CPU 占用为零
+
+### 3.3 AsyncCompiler
+
+封装 LLVM 后台编译的提交和轮询：
 
 ```cpp
 class AsyncCompiler {
 public:
-    /// Start LLVM compilation on a background thread.
-    /// The caller must ensure the Program outlives this object.
-    void startAsync(const ir::Program& program, ir::FunctionId funcId);
+    /// Submit LLVM compilation to the thread pool.
+    void startAsync(std::shared_ptr<ir::Program> program, ir::FunctionId funcId);
 
-    /// Check if LLVM code is ready (non-blocking).
+    /// Check if LLVM code is ready (non-blocking, lock-free).
     [[nodiscard]] bool isReady() const;
 
     /// Get the compiled function pointer. Must only call after isReady() == true.
     [[nodiscard]] void* getJitFunc() const;
 
-    /// Cancel or detach background compilation. Non-blocking.
-    /// Called when pipeline finishes before LLVM is ready.
-    ~AsyncCompiler();
+    /// Non-blocking — pool worker owns SharedState via shared_ptr.
+    ~AsyncCompiler() = default;
 
 private:
-    std::future<void*> future_;
-    std::atomic<bool> ready_{false};
-    void* jitFunc_{nullptr};
+    /// Shared state: ref-counted, pool worker holds its own reference.
+    /// When AsyncCompiler is destroyed, worker keeps state alive until done.
+    struct SharedState {
+        std::atomic<bool> ready{false};
+        bool failed{false};
+        void* jitFunc{nullptr};
+        double compileMs{0.0};
+        std::shared_ptr<ir::Program> program;
+        std::unique_ptr<llvm_backend::LLVMCompiler> compiler;
+    };
 
-    /// The LLVM compiler instance (must outlive execution since it owns JIT'd code).
-    std::unique_ptr<llvm_backend::LLVMCompiler> compiler_;
+    std::shared_ptr<SharedState> state_;
+    bool started_{false};
 };
 ```
 
 实现要点：
-- `startAsync()` 使用 `std::async(std::launch::async, ...)` 启动编译
+- `startAsync()` 提交编译任务到 `CompileThreadPool`，lambda 捕获 `shared_ptr<SharedState>`（而非 `this`），使 pool worker 可以安全地 outlive `AsyncCompiler` 对象
 - `isReady()` 通过 `std::atomic<bool>` 检查，**无锁**，morsel 边界调用不引入 contention
+- **析构函数非阻塞**：`~AsyncCompiler()` 只释放 `shared_ptr<SharedState>` 的引用。如果 pool worker 还在编译，它持有自己的引用，编译完成后自动清理
 - **无需拷贝 `ir::Program`**：经验证，Flying Start 和 LLVM 两个后端的 `compile()` 均不修改 Program（所有访问都是只读的：`functionMeta()`、`instructionAt()` 等）。两个后端共享同一个 `const ir::Program&`，并发读无 data race
 - 后续应将所有后端的 `compile()` 签名改为 `const ir::Program&` 以 enforce 不可变约束
-- **生命周期**：`AsyncCompiler` 拥有 `LLVMCompiler` 实例和后台线程。如果 LLVM 编译完成且被使用，`LLVMCompiler` 必须存活到 pipeline 执行完毕（它拥有 JIT'd code 的内存）。如果 pipeline 先结束，析构函数 detach 后台线程，`LLVMCompiler` 和 `ir::Program` 的引用由后台线程通过 shared ownership 安全管理（见 §5.1）
+- **生命周期**：`SharedState` 通过引用计数管理。pool worker lambda 和 `AsyncCompiler` 各持一份 `shared_ptr<SharedState>`。最后一个引用释放时，`LLVMCompiler` 和 `ir::Program` 自动析构
 
-### 3.3 线程安全
+### 3.4 线程安全
 
 | 共享资源 | 线程 | 安全性 |
 |---------|------|--------|
@@ -257,9 +289,8 @@ void PipelineExecutor::executeBuildPipelineAdaptive(
         }
     }
 
-    // No waitForCompletion() — if LLVM didn't finish, destructor detaches.
-    // If LLVM was used (activeFunc != fsFunc), asyncLlvm must outlive execution
-    // (already guaranteed: it's a local variable destroyed after the loop).
+    // ~AsyncCompiler() is non-blocking: just releases shared_ptr.
+    // Pool worker holds its own reference, cleans up when compilation finishes.
 }
 ```
 
@@ -301,7 +332,7 @@ ADAPTIVE 模式下，**每个 pipeline 总是同时启动 FS 和 LLVM 编译**�
 - LLVM 在某个 morsel 边界编译完成 → 切换到 LLVM 代码
 - 所有 morsel 执行完毕 → pipeline 结束，**不等待 LLVM 编译完成**
 
-关键约束：**LLVM 编译不能阻塞查询结束**。如果 pipeline 在 LLVM 编译完成前就处理完了所有行，直接返回结果。LLVM 后台线程由 `AsyncCompiler` 析构函数 detach 或在后台清理，不影响查询延迟。
+关键约束：**LLVM 编译不能阻塞查询结束**。如果 pipeline 在 LLVM 编译完成前就处理完了所有行，直接返回结果。`AsyncCompiler` 析构函数只释放 `shared_ptr<SharedState>` 引用（非阻塞），pool worker 持有自己的引用继续编译直到完成后自动清理。
 
 > **论文 §5.4**: "Umbra, on the other hand, only has to choose from two backends... it is safe to always begin execution with Flying Start and, if necessary, shift into high gear by using the optimizing compiler."
 
@@ -356,23 +387,22 @@ Morsel size set to: 20000
 ### 6.3 EXPLAIN PROFILE 扩展
 
 ```
-Profile (backend: adaptive, SF=0.01):
+Profile (backend: adaptive, SF=0.01, actual measurement):
                   plan    codegen  compile(FS) compile(LLVM)  execute  total
-Pipeline 0:       -       0.02ms   0.15ms      (bg, unused)   0.30ms   0.47ms
-Pipeline 1:       -       0.01ms   0.08ms      (bg, unused)   0.01ms   0.10ms
-Total:           0.20ms   0.03ms   0.23ms      -              0.31ms   0.57ms
+Pipeline 0:       -       0.02ms   0.19ms      (bg, unused)   1.14ms   1.35ms  (7 morsels)
+Pipeline 1:       -       0.01ms   0.08ms      (bg, unused)   0.00ms   0.09ms  (1 morsels)
+Total:           0.23ms   0.03ms   0.27ms      -              1.14ms   1.76ms
 
-  Pipeline 0: 6/6 morsels via Flying Start, 0/6 via LLVM. LLVM detached.
+  Pipeline 0: 7/7 morsels via Flying Start, 0/7 via LLVM. LLVM detached.
   Pipeline 1: 1/1 morsels via Flying Start, 0/1 via LLVM. LLVM detached.
 
-Profile (backend: adaptive, SF=1):
+Profile (backend: adaptive, SF=1, hypothetical):
                   plan    codegen  compile(FS) compile(LLVM)  execute  total
-Pipeline 0:       -       0.02ms   0.15ms      8.50ms         42.5ms   42.7ms
-Pipeline 1:       -       0.01ms   0.08ms      (bg, unused)   0.01ms   0.10ms
-Total:           0.20ms   0.03ms   0.23ms      8.50ms         42.5ms   42.8ms
+Pipeline 0:       -       0.02ms   0.19ms      13.0ms         33.2ms   33.4ms  (601 morsels)
+Pipeline 1:       -       0.01ms   0.08ms      (bg, unused)   0.01ms   0.10ms  (1 morsels)
+Total:           0.23ms   0.03ms   0.27ms      13.0ms         33.2ms   33.5ms
 
-  Pipeline 0: 85/600 morsels via Flying Start, 515/600 via LLVM.
-  LLVM switch at morsel 85 (row 850,000 / 6,001,215).
+  Pipeline 0: 69/601 morsels via Flying Start, 532/601 via LLVM. Switch at morsel 69.
   Pipeline 1: 1/1 morsels via Flying Start, 0/1 via LLVM. LLVM detached.
 ```
 
@@ -422,9 +452,9 @@ Pipeline 1 与 Pipeline 0 使用相同的 morsel 框架：
 
 ### 8.2 生命周期
 
-Pipeline 先结束的场景（LLVM 未完成）：`AsyncCompiler` 析构时后台线程仍在读 Program。因此 `AsyncCompiler` 需要通过 `shared_ptr<ir::Program>` 共享 Program 所有权，确保后台线程持有引用期间 Program 不被析构。
+Pipeline 先结束的场景（LLVM 未完成）：`AsyncCompiler` 析构时只释放 `shared_ptr<SharedState>`。Pool worker 持有自己的引用，继续编译直到完成，然后释放最后一个引用触发资源清理。**不阻塞查询结果返回**。
 
-Pipeline 后结束的场景（LLVM 已切换）：`AsyncCompiler` 作为局部变量在函数末尾析构，此时 morsel 循环已结束，`LLVMCompiler` 拥有的 JIT 代码不再被调用，安全析构。
+Pipeline 后结束的场景（LLVM 已切换）：`isReady()` 已返回 true，pool worker 已完成。`AsyncCompiler` 析构时释放最后一个引用，资源立即清理。
 
 ### 8.3 Const 正确性
 
@@ -475,24 +505,26 @@ Pipeline 后结束的场景（LLVM 已切换）：`AsyncCompiler` 作为局部�
 4. 修改 `PipelineExecutor` 的所有后端调用：`INTERPRETER`/`FLYING_START`/`LLVM` 传入 `(ctx, 0, totalItems)` 单次调用（build: `totalItems=rowCount`，scan: `totalItems=htCapacity`）
 5. 验证所有后端结果一致（differential test：morsel 签名 vs 现有 DuckDB baseline）
 
-### Phase 2: Morsel Dispatch Loop + AsyncCompiler
+### Phase 2: Morsel Dispatch Loop + AsyncCompiler + CompileThreadPool
 
 6. 在 `PipelineExecutor` 中为 `ADAPTIVE` 模式实现 morsel dispatch loop（所有 pipeline 统一，复用 Phase 1 的 morsel 签名）
-7. 实现 `AsyncCompiler` 类（`std::future` + `std::atomic`，含编译失败状态）
-8. 在 morsel dispatch loop 中集成 LLVM ready 检测和切换
-9. 验证 adaptive 执行结果与单后端一致
+7. 实现 `CompileThreadPool` 常驻线程池（`nproc` 个 worker，condition variable 调度）
+8. 实现 `AsyncCompiler` 类（`shared_ptr<SharedState>` + `std::atomic`，非阻塞析构）
+9. 在 morsel dispatch loop 中集成 LLVM ready 检测和切换
+10. Shell 构造函数中预热线程池（`CompileThreadPool::instance()`）
+11. 验证 adaptive 执行结果与单后端一致
 
 ### Phase 3: Shell 与 EXPLAIN 集成
 
-10. 扩展 `Backend` enum 添加 `ADAPTIVE`
-11. Shell `.backend adaptive` 命令
-12. EXPLAIN PROFILE 显示 adaptive 统计
+12. 扩展 `Backend` enum 添加 `ADAPTIVE`
+13. Shell `.backend adaptive` 命令
+14. EXPLAIN PROFILE 显示 adaptive 统计
 
 ### Phase 4: 调优与测试
 
-13. Morsel size 参数化
-14. 端到端测试：SF=0.01（全 FS，LLVM 来不及）、SF=0.1（可能切换）、SF=1（确定切换）
-15. 性能回归测试：确认 adaptive 模式下 SF=0.01 仍然 < 3.1ms（LLVM 编译不阻塞）
+15. Morsel size 参数化
+16. 端到端测试：SF=0.01（全 FS，LLVM 来不及）、SF=0.1（可能切换）、SF=1（确定切换）
+17. 性能回归测试：确认 adaptive 模式下 SF=0.01 仍然 < 3.1ms（LLVM 编译不阻塞）——✅ 实测 1.76ms
 
 ---
 

@@ -11,6 +11,7 @@
 #include "binder/binder.h"
 #include "catalog/catalog.h"
 #include "common/types.h"
+#include "execution/compile_thread_pool.h"
 #include "execution/pipeline.h"
 #include "execution/result_collector.h"
 #include "explain/explain.h"
@@ -66,7 +67,11 @@ std::string typeToString(SQLType type) {
 }  // namespace
 
 Shell::Shell(Catalog& catalog, Table& table, ShellConfig config)
-    : catalog_(catalog), table_(table), config_(std::move(config)) {}
+    : catalog_(catalog), table_(table), config_(std::move(config)) {
+    // Eagerly initialize the compile thread pool so the first adaptive query
+    // doesn't pay the ~1ms thread creation cost.
+    execution::CompileThreadPool::instance();
+}
 
 void Shell::printBanner(std::ostream& out) const {
     out << "UmbraDB v0.1 (" << table_.rowCount << " rows loaded)\n";
