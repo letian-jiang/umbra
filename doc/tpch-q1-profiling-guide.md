@@ -207,8 +207,8 @@ GROUP BY l_returnflag, l_linestatus ORDER BY l_returnflag, l_linestatus;"
 SF=0.01                          # 改为 0.1 / 1 / 10 测试其他 SF
 DATA_DIR=/tmp/umbra_sf${SF}
 
-WARMUP=3
-RUNS=7
+WARMUP=5
+RUNS=20
 
 for backend in flying-start llvm adaptive; do
   echo "=== $backend ==="
@@ -285,7 +285,6 @@ done
 
 - 所有 warmup + hot run 在**同一个进程**内完成：数据只加载一次，避免重复磁盘 I/O 和进程启动开销
 - 相邻 run 之间插入 100ms 间隔（`.sleep 100`），确保 adaptive 后台 LLVM 编译任务完成，避免累积的后台编译线程与前台执行竞争 CPU cache
-- 先运行 3 次 warmup 查询（丢弃结果），预热进程内 icache / dcache / branch predictor / JIT 缓存
-- 再运行 7 次 hot run，取中位数作为代表值（排除调度等尾部干扰）
-- 报告关键百分位：median, min, max
+- 先运行 5 次 warmup 查询（丢弃结果），预热进程内 icache / dcache / branch predictor / JIT 缓存
+- 再运行 20 次 hot run，报告 mean ± std_dev（样本标准差）
 - 对比时使用 ns/row 归一化不同数据量

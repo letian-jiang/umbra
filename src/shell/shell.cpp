@@ -7,6 +7,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <thread>
 
 #include "binder/binder.h"
 #include "catalog/catalog.h"
@@ -139,6 +140,7 @@ bool Shell::executeDotCommand(const std::string& cmd, std::ostream& out, std::os
         out << ".tables            List loaded tables\n";
         out << ".schema <table>    Show table schema\n";
         out << ".timer on|off      Toggle query timing\n";
+        out << ".sleep <ms>        Sleep for given milliseconds\n";
         out << ".backend [name]    Show or set backend (interpreter|flying-start|llvm|adaptive)\n";
         out << ".morsel [size]     Show or set morsel size for adaptive execution\n";
         return true;
@@ -236,6 +238,17 @@ bool Shell::executeDotCommand(const std::string& cmd, std::ostream& out, std::os
                 config_.morselSize = size;
                 out << "Morsel size set to: " << size << "\n";
             }
+        }
+        return true;
+    }
+
+    if (lower.starts_with(".sleep")) {
+        std::string arg = trim(cmd.substr(6));
+        if (arg.empty()) {
+            err << "Usage: .sleep <ms>\n";
+        } else {
+            auto ms = std::stoull(arg);
+            std::this_thread::sleep_for(std::chrono::milliseconds(ms));
         }
         return true;
     }
