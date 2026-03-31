@@ -1,6 +1,6 @@
 # TPC-H Q1 Performance Profiling Guide
 
-如何测试和对比不同 backend 在 TPC-H Q1 上的性能。
+如何测试和对比不同 backend 以及DuckDB 在不同 SF 的 TPC-H 数据上的 Q1 性能。
 
 ---
 

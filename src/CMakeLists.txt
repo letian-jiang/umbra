@@ -34,6 +34,7 @@ add_library(umbra_lib STATIC
     execution/result_collector.cpp
     execution/pipeline.cpp
     execution/async_compiler.cpp
+    execution/compile_thread_pool.cpp
     explain/explain.cpp
     shell/shell.cpp
     shell/formatter.cpp
