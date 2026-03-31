@@ -20,6 +20,7 @@
 #include "codegen/operators/sort.h"
 #include "codegen/operators/table_scan.h"
 #include "codegen/sql_values/sql_value.h"
+#include "execution/async_compiler.h"
 #include "ir/opcode.h"
 #include "ir/printer.h"
 #include "ir/program.h"
@@ -103,7 +104,9 @@ std::vector<CodegenResult> PipelineExecutor::codegenAllPipelines(
 
             codegen::CodegenContext cg;
             codegen::setActiveContext(&cg);
-            auto funcId = cg.createFunction("pipeline_build", ir::TypeId::VOID, {ir::TypeId::PTR, ir::TypeId::INT64, ir::TypeId::INT64});
+            auto funcId =
+                cg.createFunction("pipeline_build", ir::TypeId::VOID,
+                                  {ir::TypeId::PTR, ir::TypeId::INT64, ir::TypeId::INT64});
             codegen::CompilationContext ctx(cg);
             ctx.runtimeCtx = cg.getArg<codegen::Ptr<codegen::Int8>>(0);
             ctx.startRow = cg.getArg<codegen::Int64>(1);
@@ -135,7 +138,9 @@ std::vector<CodegenResult> PipelineExecutor::codegenAllPipelines(
 
             codegen::CodegenContext cg;
             codegen::setActiveContext(&cg);
-            auto funcId = cg.createFunction("pipeline_scan", ir::TypeId::VOID, {ir::TypeId::PTR, ir::TypeId::INT64, ir::TypeId::INT64});
+            auto funcId =
+                cg.createFunction("pipeline_scan", ir::TypeId::VOID,
+                                  {ir::TypeId::PTR, ir::TypeId::INT64, ir::TypeId::INT64});
             codegen::CompilationContext ctx(cg);
             ctx.runtimeCtx = cg.getArg<codegen::Ptr<codegen::Int8>>(0);
             ctx.startRow = cg.getArg<codegen::Int64>(1);
@@ -170,7 +175,8 @@ std::vector<CodegenResult> PipelineExecutor::codegenAllPipelines(
 
         codegen::CodegenContext cg;
         codegen::setActiveContext(&cg);
-        auto funcId = cg.createFunction("pipeline_0", ir::TypeId::VOID, {ir::TypeId::PTR, ir::TypeId::INT64, ir::TypeId::INT64});
+        auto funcId = cg.createFunction("pipeline_0", ir::TypeId::VOID,
+                                        {ir::TypeId::PTR, ir::TypeId::INT64, ir::TypeId::INT64});
         codegen::CompilationContext ctx(cg);
         ctx.runtimeCtx = cg.getArg<codegen::Ptr<codegen::Int8>>(0);
         ctx.startRow = cg.getArg<codegen::Int64>(1);
@@ -296,7 +302,8 @@ void PipelineExecutor::executeBuildPipeline(const optimizer::OptimizeResult& res
     codegen::CodegenContext cg;
     codegen::setActiveContext(&cg);
 
-    auto funcId = cg.createFunction("pipeline_build", ir::TypeId::VOID, {ir::TypeId::PTR, ir::TypeId::INT64, ir::TypeId::INT64});
+    auto funcId = cg.createFunction("pipeline_build", ir::TypeId::VOID,
+                                    {ir::TypeId::PTR, ir::TypeId::INT64, ir::TypeId::INT64});
     codegen::CompilationContext ctx(cg);
     ctx.runtimeCtx = cg.getArg<codegen::Ptr<codegen::Int8>>(0);
     ctx.startRow = cg.getArg<codegen::Int64>(1);
@@ -333,27 +340,37 @@ void PipelineExecutor::executeBuildPipeline(const optimizer::OptimizeResult& res
     std::unique_ptr<llvm_backend::LLVMCompiler> llvmCompiler;
 #endif
 
-    auto effectiveBackend = backend_;
-    if (effectiveBackend == Backend::ADAPTIVE) {
-        effectiveBackend = Backend::FLYING_START;  // Adaptive starts with FS
-    }
+    // For ADAPTIVE, compile with FS and start async LLVM.
+    // For other backends, compile with the selected backend only.
+    AsyncCompiler asyncLlvm;
 
-    switch (effectiveBackend) {
-        case Backend::FLYING_START:
-            jitFunc = jitCompiler.compile(program, funcId);
-            break;
-        case Backend::LLVM:
+    if (backend_ == Backend::ADAPTIVE) {
+        // Start async LLVM compile first — gives LLVM a head start while FS compiles.
+        // Both backends read the Program concurrently (read-only, no data race).
+        auto sharedProgram = std::make_shared<ir::Program>(std::move(program));
+        asyncLlvm.startAsync(sharedProgram, funcId);
+
+        // Flying Start compile (instant, ~0.2ms).
+        jitFunc = jitCompiler.compile(*sharedProgram, funcId);
+    } else {
+        switch (backend_) {
+            case Backend::FLYING_START:
+                jitFunc = jitCompiler.compile(program, funcId);
+                break;
+            case Backend::LLVM:
 #ifdef UMBRA_LLVM_BACKEND
-            llvmCompiler = std::make_unique<llvm_backend::LLVMCompiler>();
-            jitFunc = llvmCompiler->compile(program, funcId);
+                llvmCompiler = std::make_unique<llvm_backend::LLVMCompiler>();
+                jitFunc = llvmCompiler->compile(program, funcId);
 #else
-            throw std::runtime_error("LLVM backend not compiled. Rebuild with -DLLVM_BACKEND=ON");
+                throw std::runtime_error(
+                    "LLVM backend not compiled. Rebuild with -DLLVM_BACKEND=ON");
 #endif
-            break;
-        case Backend::INTERPRETER:
-            break;
-        case Backend::ADAPTIVE:
-            break;  // unreachable
+                break;
+            case Backend::INTERPRETER:
+                break;
+            case Backend::ADAPTIVE:
+                break;  // unreachable
+        }
     }
 
     auto compileEnd = now();
@@ -361,21 +378,42 @@ void PipelineExecutor::executeBuildPipeline(const optimizer::OptimizeResult& res
     // ── Execute phase ───────────────────────────────────────────────────
     auto execStart = now();
     uint32_t morselCount = 0;
+    uint32_t fsMorselCount = 0;
+    uint32_t llvmMorselCount = 0;
+    uint32_t switchMorsel = 0;
 
     if (backend_ == Backend::ADAPTIVE) {
-        // Morsel-driven dispatch: call pipeline function for each morsel.
+        // Morsel-driven adaptive dispatch: start with FS, switch to LLVM when ready.
+        void* activeFunc = jitFunc;
+        bool usingLlvm = false;
         uint64_t cursor = 0;
+
+        uint64_t args[3] = {ctxArg, 0, 0};
         while (cursor < totalItems) {
             uint64_t end = std::min(cursor + morselSize_, totalItems);
-            std::vector<uint64_t> args = {ctxArg, cursor, end};
-            flying_start::FlyingStartCompiler::execute(jitFunc, std::span<const uint64_t>(args));
+            args[1] = cursor;
+            args[2] = end;
+            flying_start::FlyingStartCompiler::execute(activeFunc, std::span<const uint64_t>(args));
             cursor = end;
             ++morselCount;
+
+            if (usingLlvm) {
+                ++llvmMorselCount;
+            } else {
+                ++fsMorselCount;
+            }
+
+            // Check if LLVM is ready at morsel boundary.
+            if (!usingLlvm && asyncLlvm.isReady()) {
+                activeFunc = asyncLlvm.getJitFunc();
+                usingLlvm = true;
+                switchMorsel = morselCount;  // Switch happens after this morsel.
+            }
         }
     } else {
         // Single-shot execution.
         std::vector<uint64_t> args = {ctxArg, 0, totalItems};
-        switch (effectiveBackend) {
+        switch (backend_) {
             case Backend::INTERPRETER: {
                 interpreter::Interpreter interp;
                 interp.execute(program, funcId, std::span<const uint64_t>(args));
@@ -408,6 +446,12 @@ void PipelineExecutor::executeBuildPipeline(const optimizer::OptimizeResult& res
         profiles_[0].compileMs = elapsedMs(compileStart, compileEnd);
         profiles_[0].executeMs = elapsedMs(execStart, execEnd);
         profiles_[0].totalMorsels = morselCount;
+        profiles_[0].fsMorsels = fsMorselCount;
+        profiles_[0].llvmMorsels = llvmMorselCount;
+        profiles_[0].switchMorsel = switchMorsel;
+        if (asyncLlvm.started() && asyncLlvm.isReady()) {
+            profiles_[0].llvmCompileMs = asyncLlvm.compileMs();
+        }
     }
 }
 
@@ -463,7 +507,8 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
     codegen::CodegenContext cg;
     codegen::setActiveContext(&cg);
 
-    auto funcId = cg.createFunction("pipeline_scan", ir::TypeId::VOID, {ir::TypeId::PTR, ir::TypeId::INT64, ir::TypeId::INT64});
+    auto funcId = cg.createFunction("pipeline_scan", ir::TypeId::VOID,
+                                    {ir::TypeId::PTR, ir::TypeId::INT64, ir::TypeId::INT64});
     codegen::CompilationContext ctx(cg);
     ctx.runtimeCtx = cg.getArg<codegen::Ptr<codegen::Int8>>(0);
     ctx.startRow = cg.getArg<codegen::Int64>(1);
@@ -502,27 +547,32 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
     std::unique_ptr<llvm_backend::LLVMCompiler> llvmCompiler;
 #endif
 
-    auto effectiveBackend = backend_;
-    if (effectiveBackend == Backend::ADAPTIVE) {
-        effectiveBackend = Backend::FLYING_START;
-    }
+    // For ADAPTIVE, compile with FS and start async LLVM.
+    AsyncCompiler asyncLlvm;
 
-    switch (effectiveBackend) {
-        case Backend::FLYING_START:
-            jitFunc = jitCompiler.compile(program, funcId);
-            break;
-        case Backend::LLVM:
+    if (backend_ == Backend::ADAPTIVE) {
+        auto sharedProgram = std::make_shared<ir::Program>(std::move(program));
+        asyncLlvm.startAsync(sharedProgram, funcId);
+        jitFunc = jitCompiler.compile(*sharedProgram, funcId);
+    } else {
+        switch (backend_) {
+            case Backend::FLYING_START:
+                jitFunc = jitCompiler.compile(program, funcId);
+                break;
+            case Backend::LLVM:
 #ifdef UMBRA_LLVM_BACKEND
-            llvmCompiler = std::make_unique<llvm_backend::LLVMCompiler>();
-            jitFunc = llvmCompiler->compile(program, funcId);
+                llvmCompiler = std::make_unique<llvm_backend::LLVMCompiler>();
+                jitFunc = llvmCompiler->compile(program, funcId);
 #else
-            throw std::runtime_error("LLVM backend not compiled. Rebuild with -DLLVM_BACKEND=ON");
+                throw std::runtime_error(
+                    "LLVM backend not compiled. Rebuild with -DLLVM_BACKEND=ON");
 #endif
-            break;
-        case Backend::INTERPRETER:
-            break;
-        case Backend::ADAPTIVE:
-            break;  // unreachable
+                break;
+            case Backend::INTERPRETER:
+                break;
+            case Backend::ADAPTIVE:
+                break;  // unreachable
+        }
     }
 
     auto compileEnd = now();
@@ -530,19 +580,39 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
     // ── Execute phase ───────────────────────────────────────────────────
     auto execStart = now();
     uint32_t morselCount = 0;
+    uint32_t fsMorselCount = 0;
+    uint32_t llvmMorselCount = 0;
+    uint32_t switchMorsel = 0;
 
     if (backend_ == Backend::ADAPTIVE) {
+        void* activeFunc = jitFunc;
+        bool usingLlvm = false;
         uint64_t cursor = 0;
+        uint64_t args[3] = {ctxArg, 0, 0};
+
         while (cursor < totalItems) {
             uint64_t end = std::min(cursor + morselSize_, totalItems);
-            std::vector<uint64_t> args = {ctxArg, cursor, end};
-            flying_start::FlyingStartCompiler::execute(jitFunc, std::span<const uint64_t>(args));
+            args[1] = cursor;
+            args[2] = end;
+            flying_start::FlyingStartCompiler::execute(activeFunc, std::span<const uint64_t>(args));
             cursor = end;
             ++morselCount;
+
+            if (usingLlvm) {
+                ++llvmMorselCount;
+            } else {
+                ++fsMorselCount;
+            }
+
+            if (!usingLlvm && asyncLlvm.isReady()) {
+                activeFunc = asyncLlvm.getJitFunc();
+                usingLlvm = true;
+                switchMorsel = morselCount;
+            }
         }
     } else {
         std::vector<uint64_t> args = {ctxArg, 0, totalItems};
-        switch (effectiveBackend) {
+        switch (backend_) {
             case Backend::INTERPRETER: {
                 interpreter::Interpreter interp;
                 interp.execute(program, funcId, std::span<const uint64_t>(args));
@@ -607,6 +677,12 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
         profiles_[1].compileMs = elapsedMs(compileStart, compileEnd);
         profiles_[1].executeMs = elapsedMs(execStart, execEnd);
         profiles_[1].totalMorsels = morselCount;
+        profiles_[1].fsMorsels = fsMorselCount;
+        profiles_[1].llvmMorsels = llvmMorselCount;
+        profiles_[1].switchMorsel = switchMorsel;
+        if (asyncLlvm.started() && asyncLlvm.isReady()) {
+            profiles_[1].llvmCompileMs = asyncLlvm.compileMs();
+        }
     }
 }
 

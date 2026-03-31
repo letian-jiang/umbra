@@ -32,10 +32,16 @@ static constexpr uint64_t DEFAULT_MORSEL_SIZE = 10000;
 
 /// Per-pipeline timing breakdown.
 struct PipelineProfile {
-    double codegenMs{0.0};   // Tidy Tuples IR generation.
-    double compileMs{0.0};   // IR finalization + JIT compilation (Flying Start).
-    double executeMs{0.0};   // Pipeline function execution.
+    double codegenMs{0.0};      // Tidy Tuples IR generation.
+    double compileMs{0.0};      // IR finalization + JIT compilation (Flying Start).
+    double llvmCompileMs{0.0};  // LLVM compile time (0 if unused or still running).
+    double executeMs{0.0};      // Pipeline function execution.
+
+    // Adaptive execution stats.
     uint32_t totalMorsels{0};  // Total morsel count (0 = non-morsel execution).
+    uint32_t fsMorsels{0};     // Morsels executed via Flying Start.
+    uint32_t llvmMorsels{0};   // Morsels executed via LLVM.
+    uint32_t switchMorsel{0};  // Morsel index where FS→LLVM switch happened (0 = no switch).
 };
 
 /// Result of codegen for one pipeline.
