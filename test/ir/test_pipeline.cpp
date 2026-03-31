@@ -229,9 +229,13 @@ TEST_CASE("Pipeline: build pipeline aggregates correctly", "[pipeline]") {
     CodegenContext cg;
     setActiveContext(&cg);
 
-    auto funcId = cg.createFunction("pipeline_build", TypeId::VOID, {TypeId::PTR});
+    auto funcId =
+        cg.createFunction("pipeline_build", TypeId::VOID,
+                          {TypeId::PTR, TypeId::INT64, TypeId::INT64});
     CompilationContext ctx(cg);
     ctx.runtimeCtx = cg.getArg<Ptr<Int8>>(0);
+    ctx.startRow = cg.getArg<Int64>(1);
+    ctx.endRow = cg.getArg<Int64>(2);
 
     aggTranslator->produce(ctx);
     cg.emitRetVoid();
@@ -248,7 +252,8 @@ TEST_CASE("Pipeline: build pipeline aggregates correctly", "[pipeline]") {
     Interpreter interp;
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     auto ctxArg = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&rtCtx));
-    std::vector<uint64_t> args = {ctxArg};
+    uint64_t rowCount = table.rowCount;
+    std::vector<uint64_t> args = {ctxArg, 0, rowCount};
     interp.execute(program, funcId, std::span<const uint64_t>(args));
 
     setActiveContext(nullptr);
@@ -564,9 +569,13 @@ TEST_CASE("Pipeline: filter rejects all rows", "[pipeline]") {
     CodegenContext cg;
     setActiveContext(&cg);
 
-    auto funcId = cg.createFunction("test_scan_filter", TypeId::VOID, {TypeId::PTR});
+    auto funcId =
+        cg.createFunction("test_scan_filter", TypeId::VOID,
+                          {TypeId::PTR, TypeId::INT64, TypeId::INT64});
     CompilationContext ctx(cg);
     ctx.runtimeCtx = cg.getArg<Ptr<Int8>>(0);
+    ctx.startRow = cg.getArg<Int64>(1);
+    ctx.endRow = cg.getArg<Int64>(2);
 
     resultWriter->produce(ctx);
     cg.emitRetVoid();
@@ -586,7 +595,8 @@ TEST_CASE("Pipeline: filter rejects all rows", "[pipeline]") {
     Interpreter interp;
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     auto ctxArg = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&rtCtx));
-    std::vector<uint64_t> args = {ctxArg};
+    uint64_t rowCount = simpleTable.rowCount;
+    std::vector<uint64_t> args = {ctxArg, 0, rowCount};
     interp.execute(program, funcId, std::span<const uint64_t>(args));
 
     setActiveContext(nullptr);

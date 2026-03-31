@@ -134,7 +134,8 @@ bool Shell::executeDotCommand(const std::string& cmd, std::ostream& out, std::os
         out << ".tables            List loaded tables\n";
         out << ".schema <table>    Show table schema\n";
         out << ".timer on|off      Toggle query timing\n";
-        out << ".backend [name]    Show or set backend (interpreter|flying-start)\n";
+        out << ".backend [name]    Show or set backend (interpreter|flying-start|llvm|adaptive)\n";
+        out << ".morsel [size]     Show or set morsel size for adaptive execution\n";
         return true;
     }
 
@@ -185,6 +186,9 @@ bool Shell::executeDotCommand(const std::string& cmd, std::ostream& out, std::os
                 case execution::Backend::LLVM:
                     name = "llvm";
                     break;
+                case execution::Backend::ADAPTIVE:
+                    name = "adaptive";
+                    break;
             }
             out << "Current backend: " << name << "\n";
         } else if (arg == "interpreter") {
@@ -200,8 +204,33 @@ bool Shell::executeDotCommand(const std::string& cmd, std::ostream& out, std::os
 #else
             err << "LLVM backend not compiled. Rebuild with -DLLVM_BACKEND=ON\n";
 #endif
+        } else if (arg == "adaptive") {
+#ifdef UMBRA_LLVM_BACKEND
+            config_.backend = execution::Backend::ADAPTIVE;
+            out << "Backend set to: adaptive\n";
+#else
+            // Adaptive without LLVM is just morsel-driven FS.
+            config_.backend = execution::Backend::ADAPTIVE;
+            out << "Backend set to: adaptive (no LLVM — Flying Start only with morsel dispatch)\n";
+#endif
         } else {
-            err << "Usage: .backend [interpreter|flying-start|llvm]\n";
+            err << "Usage: .backend [interpreter|flying-start|llvm|adaptive]\n";
+        }
+        return true;
+    }
+
+    if (lower.starts_with(".morsel")) {
+        std::string arg = trim(cmd.substr(7));
+        if (arg.empty()) {
+            out << "Current morsel size: " << config_.morselSize << "\n";
+        } else {
+            auto size = std::stoull(arg);
+            if (size == 0) {
+                err << "Morsel size must be > 0\n";
+            } else {
+                config_.morselSize = size;
+                out << "Morsel size set to: " << size << "\n";
+            }
         }
         return true;
     }
@@ -244,7 +273,7 @@ void Shell::executeQuery(const std::string& sql, std::ostream& out, std::ostream
         optimizer::Optimizer opt;
         auto optResult = opt.optimize(bindResult);
         execution::ResultCollector collector;
-        execution::PipelineExecutor executor(config_.backend);
+        execution::PipelineExecutor executor(config_.backend, config_.morselSize);
         executor.execute(optResult, table_, collector);
         double elapsedMs = std::chrono::duration<double, std::milli>(
                                std::chrono::high_resolution_clock::now() - start)

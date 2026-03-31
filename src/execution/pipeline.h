@@ -24,13 +24,18 @@ enum class Backend {
     INTERPRETER,   // Reference interpreter — no compilation overhead, slower execution.
     FLYING_START,  // Flying Start JIT — fast single-pass x86-64 compilation, native execution.
     LLVM,          // LLVM JIT — O3-optimized compilation, best execution performance.
+    ADAPTIVE,      // Flying Start + async LLVM — morsel-driven, switch at morsel boundary.
 };
+
+/// Default morsel size (rows per morsel).
+static constexpr uint64_t DEFAULT_MORSEL_SIZE = 10000;
 
 /// Per-pipeline timing breakdown.
 struct PipelineProfile {
-    double codegenMs{0.0};  // Tidy Tuples IR generation.
-    double compileMs{0.0};  // IR finalization + JIT compilation (Flying Start).
-    double executeMs{0.0};  // Pipeline function execution.
+    double codegenMs{0.0};   // Tidy Tuples IR generation.
+    double compileMs{0.0};   // IR finalization + JIT compilation (Flying Start).
+    double executeMs{0.0};   // Pipeline function execution.
+    uint32_t totalMorsels{0};  // Total morsel count (0 = non-morsel execution).
 };
 
 /// Result of codegen for one pipeline.
@@ -52,7 +57,8 @@ struct CodegenResult {
 class PipelineExecutor {
    public:
     /// Construct with the specified backend (default: interpreter).
-    explicit PipelineExecutor(Backend backend = Backend::INTERPRETER);
+    explicit PipelineExecutor(Backend backend = Backend::INTERPRETER,
+                              uint64_t morselSize = DEFAULT_MORSEL_SIZE);
 
     /// Enable per-pipeline profiling. Must be called before execute().
     void enableProfiling() { profiling_ = true; }
@@ -90,6 +96,9 @@ class PipelineExecutor {
    private:
     /// Selected execution backend.
     Backend backend_;
+
+    /// Morsel size for adaptive execution.
+    uint64_t morselSize_;
 
     /// Profiling state.
     bool profiling_{false};

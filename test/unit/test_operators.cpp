@@ -87,9 +87,11 @@ TEST_CASE("TableScan: scan all rows without filter", "[operators]") {
     CodegenContext cg;
     setActiveContext(&cg);
 
-    auto funcId = cg.createFunction("test_scan", TypeId::VOID, {TypeId::PTR});
+    auto funcId = cg.createFunction("test_scan", TypeId::VOID, {TypeId::PTR, TypeId::INT64, TypeId::INT64});
     CompilationContext ctx(cg);
     ctx.runtimeCtx = cg.getArg<Ptr<Int8>>(0);
+    ctx.startRow = cg.getArg<Int64>(1);
+    ctx.endRow = cg.getArg<Int64>(2);
 
     resultWriter->produce(ctx);
     cg.emitRetVoid();
@@ -111,7 +113,7 @@ TEST_CASE("TableScan: scan all rows without filter", "[operators]") {
     Interpreter interp;
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     auto ctxArg = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&rtCtx));
-    std::vector<uint64_t> args = {ctxArg};
+    std::vector<uint64_t> args = {ctxArg, 0, 5};
     interp.execute(program, funcId, std::span<const uint64_t>(args));
 
     setActiveContext(nullptr);
@@ -153,9 +155,11 @@ TEST_CASE("TableScan: scan with filter predicate", "[operators]") {
     CodegenContext cg;
     setActiveContext(&cg);
 
-    auto funcId = cg.createFunction("test_scan_filter", TypeId::VOID, {TypeId::PTR});
+    auto funcId = cg.createFunction("test_scan_filter", TypeId::VOID, {TypeId::PTR, TypeId::INT64, TypeId::INT64});
     CompilationContext ctx(cg);
     ctx.runtimeCtx = cg.getArg<Ptr<Int8>>(0);
+    ctx.startRow = cg.getArg<Int64>(1);
+    ctx.endRow = cg.getArg<Int64>(2);
 
     resultWriter->produce(ctx);
     cg.emitRetVoid();
@@ -175,7 +179,7 @@ TEST_CASE("TableScan: scan with filter predicate", "[operators]") {
     Interpreter interp;
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     auto ctxArg = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&rtCtx));
-    std::vector<uint64_t> args = {ctxArg};
+    std::vector<uint64_t> args = {ctxArg, 0, 5};
     interp.execute(program, funcId, std::span<const uint64_t>(args));
 
     setActiveContext(nullptr);
@@ -333,9 +337,11 @@ TEST_CASE("TableScan: single column scan", "[operators]") {
     CodegenContext cg;
     setActiveContext(&cg);
 
-    auto funcId = cg.createFunction("test_single_col", TypeId::VOID, {TypeId::PTR});
+    auto funcId = cg.createFunction("test_single_col", TypeId::VOID, {TypeId::PTR, TypeId::INT64, TypeId::INT64});
     CompilationContext ctx(cg);
     ctx.runtimeCtx = cg.getArg<Ptr<Int8>>(0);
+    ctx.startRow = cg.getArg<Int64>(1);
+    ctx.endRow = cg.getArg<Int64>(2);
 
     resultWriter->produce(ctx);
     cg.emitRetVoid();
@@ -355,7 +361,7 @@ TEST_CASE("TableScan: single column scan", "[operators]") {
     Interpreter interp;
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     auto ctxArg = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&rtCtx));
-    std::vector<uint64_t> args = {ctxArg};
+    std::vector<uint64_t> args = {ctxArg, 0, 5};
     interp.execute(program, funcId, std::span<const uint64_t>(args));
 
     setActiveContext(nullptr);

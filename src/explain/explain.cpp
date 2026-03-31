@@ -289,6 +289,9 @@ std::string runExplain(ExplainLevel level, const std::string& sql, const Catalog
             case execution::Backend::LLVM:
                 backendName = "llvm";
                 break;
+            case execution::Backend::ADAPTIVE:
+                backendName = "adaptive";
+                break;
         }
         out << "Profile (backend: " << backendName << "):\n";
         out << "                  plan    codegen  compile  execute  total\n";
@@ -296,7 +299,11 @@ std::string runExplain(ExplainLevel level, const std::string& sql, const Catalog
             const auto& p = profiles[i];
             double pTotal = p.codegenMs + p.compileMs + p.executeMs;
             out << "Pipeline " << i << ":       -       " << p.codegenMs << "ms   " << p.compileMs
-                << "ms   " << p.executeMs << "ms   " << pTotal << "ms\n";
+                << "ms   " << p.executeMs << "ms   " << pTotal << "ms";
+            if (p.totalMorsels > 0) {
+                out << "  (" << p.totalMorsels << " morsels)";
+            }
+            out << "\n";
         }
         out << "Total:           " << planMs << "ms   " << totalCodegen << "ms   " << totalCompile
             << "ms   " << totalExecute << "ms   " << totalMs << "ms\n";

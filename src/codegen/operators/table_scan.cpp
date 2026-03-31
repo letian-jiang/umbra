@@ -31,12 +31,9 @@ void TableScanTranslator::produce(CompilationContext& ctx) {
     auto colPtrsFieldPtr = Ptr<Int8>(bld.emitBitcast(ir::TypeId::PTR, ctx.runtimeCtx.op()));
     auto colPtrsBase = Ptr<Int8>(bld.emitLoad(ir::TypeId::PTR, colPtrsFieldPtr.op()));
 
-    // Load rowCount from RuntimeContext (offset 8).
-    auto rowCountOffset = cg.constInt64(8);
-    auto rowCountPtr =
-        Ptr<Int8>(bld.emitGEP(ctx.runtimeCtx.op(), ir::TypeId::INT8, rowCountOffset.op()));
-    auto rowCountPtrTyped = Ptr<Int8>(bld.emitBitcast(ir::TypeId::PTR, rowCountPtr.op()));
-    auto rowCount = Int64(bld.emitLoad(ir::TypeId::INT64, rowCountPtrTyped.op()));
+    // Get loop bounds from CompilationContext (morsel-driven scan).
+    auto startRow = ctx.startRow;
+    auto endRow = ctx.endRow;
 
     // Load column base pointers for each needed column.
     // columnPtrs is void** — an array of pointers.
@@ -52,9 +49,8 @@ void TableScanTranslator::produce(CompilationContext& ctx) {
         colBases.push_back(colBase);
     }
 
-    // Emit scan loop: for i = 0 to rowCount.
-    auto zero = cg.constInt64(0);
-    LoopBuilder loop(cg, {zero.op()}, {ir::TypeId::INT64});
+    // Emit scan loop: for i = startRow to endRow.
+    LoopBuilder loop(cg, {startRow.op()}, {ir::TypeId::INT64});
     auto loopI = loop.getLoopVar<Int64>(0);
 
     // Load column values for this row.
@@ -103,7 +99,7 @@ void TableScanTranslator::produce(CompilationContext& ctx) {
     // Loop increment and continue condition.
     auto one = cg.constInt64(1);
     auto nextI = loopI + one;
-    auto continueLoop = nextI < rowCount;
+    auto continueLoop = nextI < endRow;
     loop.done(continueLoop, {nextI.op()});
 }
 
