@@ -1235,11 +1235,11 @@ void FlyingStartCompiler::translateCrc32(ir::Program& /*program*/, const ir::Ins
     loadValueToReg(inst.arg(0), x86::rax);  // data
     loadValueToReg(inst.arg(1), x86::rcx);  // seed
 
-    // crc32 r32, r/m64: accumulates CRC of 8-byte data into 32-bit reg.
-    as_->mov(x86::edx, x86::ecx);  // seed into edx (32-bit)
-    as_->crc32(x86::edx, x86::rax);
+    // crc32 r64, r/m64: accumulates CRC of 8-byte data into 64-bit reg.
+    as_->mov(x86::rdx, x86::rcx);  // seed into rdx (full 64-bit)
+    as_->crc32(x86::rdx, x86::rax);
 
-    // Result in edx (zero-extended to rdx).
+    // Result in rdx.
     storeResult(instOff, x86::rdx, ir::TypeId::UINT64);
 }
 

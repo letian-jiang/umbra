@@ -230,6 +230,15 @@ if(LLVM_BACKEND)
         Catch2::Catch2WithMain
     )
     add_test(NAME llvm_backend COMMAND test_llvm_backend)
+
+    add_executable(test_adaptive_analysis
+        perf/test_adaptive_analysis.cpp
+    )
+    target_link_libraries(test_adaptive_analysis PRIVATE
+        umbra_lib
+        Catch2::Catch2WithMain
+    )
+    add_test(NAME adaptive_analysis COMMAND test_adaptive_analysis)
 endif()
 
 # Verify the main executable runs and exits 0 (pipe mode, no input)

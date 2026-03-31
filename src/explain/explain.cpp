@@ -233,6 +233,11 @@ std::string runExplain(ExplainLevel level, const std::string& sql, const Catalog
             out << "LLVM IR (optimized, O3):\n";
             out << executor.generateASM(optResult);
             out << "\n";
+        } else if (backend == execution::Backend::ADAPTIVE) {
+            execution::PipelineExecutor executor(execution::Backend::ADAPTIVE);
+            out << "ASM (adaptive: Flying Start + LLVM O3):\n";
+            out << executor.generateASM(optResult);
+            out << "\n";
         } else
 #endif
         {
