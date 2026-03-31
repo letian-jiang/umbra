@@ -153,7 +153,6 @@ SELECT ... FROM lineitem ...;" | duckdb
 
 | Backend | Shell 命令 | 特征 |
 |---------|-----------|------|
-| Interpreter | `.backend interpreter` | 零编译开销，纯解释执行 |
 | Flying Start | `.backend flying-start` | asmjit 单趟编译，即时执行 |
 | LLVM | `.backend llvm` | O3 + host 函数内联，编译慢执行快 |
 | Adaptive | `.backend adaptive` | FS 立即执行 + LLVM 异步编译，morsel 边界切换 |
@@ -195,7 +194,7 @@ Adaptive 额外指标：
 
 ### 4.1 全 backend EXPLAIN PROFILE
 
-所有 warmup + hot run 在**同一个进程**内完成（数据加载一次，查询多次）：
+所有 warmup + hot run 在**同一个进程**内完成（数据加载一次，查询多次）。相邻 run 之间插入 `.sleep 100` 等待 100ms，确保 adaptive 后台 LLVM 编译完成，避免 cache 竞争干扰后续测量：
 
 ```bash
 Q1="SELECT l_returnflag, l_linestatus, SUM(l_quantity), SUM(l_extendedprice), \
@@ -211,15 +210,16 @@ DATA_DIR=/tmp/umbra_sf${SF}
 WARMUP=3
 RUNS=7
 
-for backend in interpreter flying-start llvm adaptive; do
+for backend in flying-start llvm adaptive; do
   echo "=== $backend ==="
   # 构建单进程输入：warmup 查询（无 EXPLAIN PROFILE）+ hot run 查询
+  # 每次查询后 sleep 100ms，防止 adaptive 后台 LLVM 编译累积导致 cache 干扰
   {
     echo ".backend $backend"
-    for i in $(seq 1 $WARMUP); do echo "$Q1"; done
-    for i in $(seq 1 $RUNS); do echo "EXPLAIN PROFILE $Q1"; done
+    for i in $(seq 1 $WARMUP); do echo "$Q1"; echo ".sleep 100"; done
+    for i in $(seq 1 $RUNS); do echo "EXPLAIN PROFILE $Q1"; echo ".sleep 100"; done
   } | ./build/src/umbra --data $DATA_DIR 2>&1 \
-    | grep -E "^Pipeline 0:|^Total|morsels via"
+    | grep -E "Pipeline [01]:|Total:|morsels via"
 done
 ```
 
@@ -231,10 +231,10 @@ for ms in 500 1000 2000 5000 10000 20000 50000 100000; do
     echo ".backend adaptive"
     echo ".morsel $ms"
     # Warmup（无 timer）
-    for i in $(seq 1 $WARMUP); do echo "$Q1"; done
+    for i in $(seq 1 $WARMUP); do echo "$Q1"; echo ".sleep 100"; done
     # Hot runs（开启 timer）
     echo ".timer on"
-    for i in $(seq 1 $RUNS); do echo "$Q1"; done
+    for i in $(seq 1 $RUNS); do echo "$Q1"; echo ".sleep 100"; done
   } | ./build/src/umbra --data $DATA_DIR 2>&1 \
     | grep -oP '[\d.]+(?= ms)' \
     | paste -sd' ' \
@@ -284,6 +284,7 @@ done
 ## 5. 统计方法
 
 - 所有 warmup + hot run 在**同一个进程**内完成：数据只加载一次，避免重复磁盘 I/O 和进程启动开销
+- 相邻 run 之间插入 100ms 间隔（`.sleep 100`），确保 adaptive 后台 LLVM 编译任务完成，避免累积的后台编译线程与前台执行竞争 CPU cache
 - 先运行 3 次 warmup 查询（丢弃结果），预热进程内 icache / dcache / branch predictor / JIT 缓存
 - 再运行 7 次 hot run，取中位数作为代表值（排除调度等尾部干扰）
 - 报告关键百分位：median, min, max

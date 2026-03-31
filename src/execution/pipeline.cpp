@@ -428,29 +428,31 @@ void PipelineExecutor::executeBuildPipeline(const optimizer::OptimizeResult& res
                 switchMorsel = morselCount;  // Switch happens after this morsel.
             }
         }
-    } else {
-        // Single-shot execution.
+    } else if (backend_ == Backend::INTERPRETER) {
         std::vector<uint64_t> args = {ctxArg, 0, totalItems};
-        switch (backend_) {
-            case Backend::INTERPRETER: {
-                interpreter::Interpreter interp;
-                interp.execute(program, funcId, std::span<const uint64_t>(args));
-                break;
-            }
-            case Backend::FLYING_START:
+        interpreter::Interpreter interp;
+        interp.execute(program, funcId, std::span<const uint64_t>(args));
+    } else {
+        // Morsel-driven execution for FS / LLVM (same batch size as adaptive).
+        uint64_t cursor = 0;
+        uint64_t args[3] = {ctxArg, 0, 0};
+        while (cursor < totalItems) {
+            uint64_t end = std::min(cursor + morselSize_, totalItems);
+            args[1] = cursor;
+            args[2] = end;
+            if (backend_ == Backend::FLYING_START) {
                 flying_start::FlyingStartCompiler::execute(jitFunc,
                                                            std::span<const uint64_t>(args));
-                break;
-            case Backend::LLVM:
+            } else {
 #ifdef UMBRA_LLVM_BACKEND
                 llvm_backend::LLVMCompiler::execute(jitFunc, std::span<const uint64_t>(args));
 #else
                 throw std::runtime_error(
                     "LLVM backend not compiled. Rebuild with -DLLVM_BACKEND=ON");
 #endif
-                break;
-            case Backend::ADAPTIVE:
-                break;  // unreachable
+            }
+            cursor = end;
+            ++morselCount;
         }
     }
 
@@ -628,28 +630,30 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
                 switchMorsel = morselCount;
             }
         }
-    } else {
+    } else if (backend_ == Backend::INTERPRETER) {
         std::vector<uint64_t> args = {ctxArg, 0, totalItems};
-        switch (backend_) {
-            case Backend::INTERPRETER: {
-                interpreter::Interpreter interp;
-                interp.execute(program, funcId, std::span<const uint64_t>(args));
-                break;
-            }
-            case Backend::FLYING_START:
+        interpreter::Interpreter interp;
+        interp.execute(program, funcId, std::span<const uint64_t>(args));
+    } else {
+        uint64_t cursor = 0;
+        uint64_t args[3] = {ctxArg, 0, 0};
+        while (cursor < totalItems) {
+            uint64_t end = std::min(cursor + morselSize_, totalItems);
+            args[1] = cursor;
+            args[2] = end;
+            if (backend_ == Backend::FLYING_START) {
                 flying_start::FlyingStartCompiler::execute(jitFunc,
                                                            std::span<const uint64_t>(args));
-                break;
-            case Backend::LLVM:
+            } else {
 #ifdef UMBRA_LLVM_BACKEND
                 llvm_backend::LLVMCompiler::execute(jitFunc, std::span<const uint64_t>(args));
 #else
                 throw std::runtime_error(
                     "LLVM backend not compiled. Rebuild with -DLLVM_BACKEND=ON");
 #endif
-                break;
-            case Backend::ADAPTIVE:
-                break;  // unreachable
+            }
+            cursor = end;
+            ++morselCount;
         }
     }
 
