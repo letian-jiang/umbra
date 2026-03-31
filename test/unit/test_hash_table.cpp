@@ -401,16 +401,19 @@ TEST_CASE("HashTableCodegen: scan iterates all entries", "[hash_table]") {
     setActiveContext(&ctx);
     codegen.registerHostFunctions(ctx);
 
-    // fn(tablePtr, outPtr): scan the table, sum all agg values, write to outPtr.
-    auto fn = ctx.createFunction("scan_sum", TypeId::VOID, {TypeId::PTR, TypeId::PTR});
+    // fn(tablePtr, outPtr, startSlot, endSlot): scan the table, sum all agg values, write to outPtr.
+    auto fn = ctx.createFunction("scan_sum", TypeId::VOID,
+                                 {TypeId::PTR, TypeId::PTR, TypeId::INT64, TypeId::INT64});
     auto tablePtr = ctx.getArg<Ptr<Int8>>(0);
     auto outPtr = ctx.getArg<Ptr<Int64>>(1);
+    auto startSlot = ctx.getArg<Int64>(2);
+    auto endSlot = ctx.getArg<Int64>(3);
 
     // Initialize sum to 0.
     auto zero = ctx.constInt64(0);
     outPtr.store(ctx, zero);
 
-    codegen.scan(ctx, tablePtr, [&](Ptr<Int8> entry) {
+    codegen.scan(ctx, tablePtr, startSlot, endSlot, [&](Ptr<Int8> entry) {
         // Load the aggregate state from entry.
         auto aggOffset = ctx.constInt64(static_cast<int64_t>(codegen.aggOffset()));
         auto statePtr = Ptr<Int8>(ctx.builder().emitGEP(entry.op(), TypeId::INT8, aggOffset.op()));
@@ -432,7 +435,7 @@ TEST_CASE("HashTableCodegen: scan iterates all entries", "[hash_table]") {
     auto tableAddr = reinterpret_cast<uint64_t>(&ht);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     auto outAddr = reinterpret_cast<uint64_t>(&output);
-    run(program, fn, {tableAddr, outAddr});
+    run(program, fn, {tableAddr, outAddr, 0, ht.capacity()});
 
     REQUIRE(output == 3000);
 }

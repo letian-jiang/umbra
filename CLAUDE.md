@@ -45,12 +45,16 @@ Shell → SQL string → Parser → AST → Binder → Logical Plan → Optimize
 | Optimizer | `src/optimizer/` | `doc/optimizer.md` | Optimization rules, physical plan, pipeline decomposition |
 | Tidy Tuples | `src/codegen/` (operators/ structures/ tuples/ sql_values/ api/) | `doc/tidy-tuples.md` | 5-layer codegen interfaces, operator translators |
 | Umbra IR | `src/ir/` | `doc/ir.md` | Opcodes, instruction encoding, builder, constant folding, DCE |
-| Interpreter | `src/backend/interpreter/` | `doc/interpreter.md` | Execution model, value slots, PHI resolution |
-| Flying Start | `src/backend/flying_start/` | `doc/flying-start.md` | Register alloc, translation rules, optimizations |
-| LLVM Backend | `src/backend/llvm/` | `doc/llvm-backend.md` | IR lowering rules, LLVM optimization, ORC JIT |
+| Backends (overview) | `src/backend/`, `src/execution/` | `doc/backend/README.md` | Backend enum, unified interface, ABI |
+| Interpreter | `src/backend/interpreter/` | `doc/backend/interpreter.md` | Execution model, value slots, PHI resolution |
+| Flying Start | `src/backend/flying_start/` | `doc/backend/flying-start.md` | Register alloc, translation rules, optimizations |
+| LLVM Backend | `src/backend/llvm/` | `doc/backend/llvm-backend.md` | IR lowering rules, LLVM optimization, ORC JIT |
+| Inline Host Fns | `src/backend/llvm/` | `doc/backend/inline-host-functions.md` | LLVM host function inlining |
+| Adaptive Execution | `src/execution/` | `doc/backend/adaptive-execution.md` | Morsel-driven dispatch, async LLVM, backend switching |
 | EXPLAIN | `src/explain/` | `doc/explain.md` | EXPLAIN levels, output format |
 | Shell | `src/shell/` | `doc/shell.md` | REPL commands, key bindings, result formatting |
-| Execution | `src/execution/` | `doc/optimizer.md` | Pipeline execution, result materialization |
+| Morsel-Driven Parallel | `src/execution/` | `doc/morsel-driven-execution.md` | Thread pool, morsel dispatch, parallel aggregation, merge |
+| Execution | `src/execution/` | `doc/execution.md` | Pipeline dispatch, RuntimeContext, result collection |
 | Testing | `test/` (unit/ ir/ sql/ perf/) | `doc/testing.md` | Test strategy, categories, coverage approach |
 | Overall | — | `CLAUDE.md` | Architecture, dependencies, scope |
 

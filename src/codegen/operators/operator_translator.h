@@ -16,6 +16,8 @@ class OperatorTranslator;
 struct CompilationContext {
     CodegenContext& codegen;
     Ptr<Int8> runtimeCtx;  // Pointer to RuntimeContext passed as function arg
+    Int64 startRow;         // Morsel start index (function arg 1)
+    Int64 endRow;           // Morsel end index (function arg 2)
 
     explicit CompilationContext(CodegenContext& cg) : codegen(cg) {}
 };

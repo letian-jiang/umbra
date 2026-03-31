@@ -116,8 +116,8 @@ void HashAggregateTranslator::produceScan(CompilationContext& ctx) {
     auto htFieldPtrTyped = Ptr<Int8>(bld.emitBitcast(ir::TypeId::PTR, htFieldPtr.op()));
     auto htPtr = Ptr<Int8>(bld.emitLoad(ir::TypeId::PTR, htFieldPtrTyped.op()));
 
-    // Scan all entries in the hash table.
-    htCodegen_->scan(cg, htPtr, [&](Ptr<Int8> entryPtr) {
+    // Scan entries in the hash table using morsel bounds.
+    htCodegen_->scan(cg, htPtr, ctx.startRow, ctx.endRow, [&](Ptr<Int8> entryPtr) {
         // Unpack group-by keys.
         auto keys = htCodegen_->keyLayout().unpack(cg, entryPtr);
 

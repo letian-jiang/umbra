@@ -52,7 +52,7 @@ class HashTable {
     [[nodiscard]] uint32_t size() const { return numEntries_; }
 
     /// Get the capacity (total number of slots).
-    [[nodiscard]] uint32_t capacity() const { return capacity_; }
+    [[nodiscard]] uint64_t capacity() const { return capacity_; }
 
     /// Get the entry size (payload size per slot).
     [[nodiscard]] uint32_t entrySize() const { return entrySize_; }
@@ -161,10 +161,10 @@ class HashTableCodegen {
     Ptr<Int8> findOrInsert(CodegenContext& ctx, Ptr<Int8> tablePtr, UInt64 hashVal,
                            const std::vector<SQLValue>& keys);
 
-    /// Emit IR to iterate over all entries in the hash table.
-    /// Generates a loop over all slots, checking the occupied flag,
+    /// Emit IR to iterate over entries in the hash table.
+    /// Generates a loop over slots [startSlot, endSlot), checking the occupied flag,
     /// and calling the callback for each occupied entry.
-    void scan(CodegenContext& ctx, Ptr<Int8> tablePtr,
+    void scan(CodegenContext& ctx, Ptr<Int8> tablePtr, Int64 startSlot, Int64 endSlot,
               const std::function<void(Ptr<Int8>)>& callback);
 
    private:

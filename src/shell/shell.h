@@ -15,6 +15,7 @@ struct ShellConfig {
     bool timerEnabled{false};                                     // Show timing after each query.
     std::string dataDir{"."};                                     // Directory for .tbl files.
     execution::Backend backend{execution::Backend::INTERPRETER};  // Execution backend.
+    uint64_t morselSize{execution::DEFAULT_MORSEL_SIZE};          // Morsel size for adaptive.
 };
 
 /// Interactive REPL for UmbraDB.

@@ -348,16 +348,18 @@ Ptr<Int8> HashTableCodegen::findOrInsert(CodegenContext& ctx, Ptr<Int8> tablePtr
     return finalResult;
 }
 
-void HashTableCodegen::scan(CodegenContext& ctx, Ptr<Int8> tablePtr,
+void HashTableCodegen::scan(CodegenContext& ctx, Ptr<Int8> tablePtr, Int64 startSlot,
+                            Int64 endSlot,
                             const std::function<void(Ptr<Int8>)>& callback) {
-    // Get hash table metadata via host functions.
-    auto capacity = ctx.call<UInt64>(getCapacityFn_, tablePtr);
     auto slotBuf = ctx.call<Ptr<Int8>>(getSlotBufferFn_, tablePtr);
     auto stride = ctx.call<UInt64>(getSlotStrideFn_, tablePtr);
 
-    // Loop from i=0 to i<capacity.
-    auto initI = ctx.constUInt64(0);
-    LoopBuilder loop(ctx, {initI.op()}, {ir::TypeId::UINT64});
+    // Cast startSlot/endSlot to UInt64 (matching stride type).
+    auto startU = UInt64(ctx.builder().emitBitcast(ir::TypeId::UINT64, startSlot.op()));
+    auto endU = UInt64(ctx.builder().emitBitcast(ir::TypeId::UINT64, endSlot.op()));
+
+    // Loop from startSlot to endSlot.
+    LoopBuilder loop(ctx, {startU.op()}, {ir::TypeId::UINT64});
     auto loopI = loop.getLoopVar<UInt64>(0);
 
     // Compute slot pointer: slotBuf + i * stride.
@@ -383,7 +385,7 @@ void HashTableCodegen::scan(CodegenContext& ctx, Ptr<Int8> tablePtr,
 
     auto one = ctx.constUInt64(1);
     auto nextI = loopI + one;
-    auto continueLoop = nextI < capacity;
+    auto continueLoop = nextI < endU;
     loop.done(continueLoop, {nextI.op()});
 }
 
