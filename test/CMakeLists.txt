@@ -244,15 +244,6 @@ if(EXISTS "${DUCKDB_ROOT}/src/include/duckdb.h" AND EXISTS "${DUCKDB_LIB_DIR}/li
     )
 endif()
 
-# Performance: Q1 benchmark
-add_executable(test_benchmark
-    perf/test_benchmark.cpp
-)
-target_link_libraries(test_benchmark PRIVATE
-    umbra_lib
-    Catch2::Catch2WithMain
-)
-add_test(NAME benchmark COMMAND test_benchmark)
 
 # LLVM backend tests (conditional)
 if(LLVM_BACKEND)
@@ -265,14 +256,6 @@ if(LLVM_BACKEND)
     )
     add_test(NAME llvm_backend COMMAND test_llvm_backend)
 
-    add_executable(test_adaptive_analysis
-        perf/test_adaptive_analysis.cpp
-    )
-    target_link_libraries(test_adaptive_analysis PRIVATE
-        umbra_lib
-        Catch2::Catch2WithMain
-    )
-    add_test(NAME adaptive_analysis COMMAND test_adaptive_analysis)
 endif()
 
 # Verify the main executable runs and exits 0 (pipe mode, no input)

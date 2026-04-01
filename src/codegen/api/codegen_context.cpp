@@ -328,8 +328,9 @@ LoopBuilder::LoopBuilder(CodegenContext& ctx, const std::vector<ir::IROp>& loopV
     // Initial incoming: (preheaderBlock, initVal).
     // Back-edge incoming: will be patched in done().
     for (size_t i = 0; i < loopVarInits.size(); ++i) {
-        auto phiOp = ctx_.builder().emitPhi(loopVarTypes[i], {{preheaderBlock_, loopVarInits[i]},
-                                                              {ir::IR_INVALID_BLOCK, ir::INVALID_OP}});
+        auto phiOp = ctx_.builder().emitPhi(
+            loopVarTypes[i],
+            {{preheaderBlock_, loopVarInits[i]}, {ir::IR_INVALID_BLOCK, ir::INVALID_OP}});
         phiOps_.push_back(phiOp);
     }
     // Note: the loop body should check the condition and branch.

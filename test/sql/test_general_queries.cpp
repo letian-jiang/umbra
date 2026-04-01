@@ -266,8 +266,8 @@ TEST_CASE("DECIMAL literal with scale=3", "[sql][general]") {
     auto backend = GENERATE(from_range(ALL_BACKENDS));
     auto catalog = makeCatalog();
     auto table = makeTable();
-    auto collector = executeSQL(catalog, table,
-                                "SELECT l_discount FROM lineitem WHERE l_discount > 0.005", backend);
+    auto collector = executeSQL(
+        catalog, table, "SELECT l_discount FROM lineitem WHERE l_discount > 0.005", backend);
     CHECK(collector.numRows() == 6);
 }
 

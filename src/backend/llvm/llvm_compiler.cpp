@@ -433,6 +433,11 @@ void LLVMCompiler::Impl::populatePhiIncomings(ir::Program& prog) {
             uint8_t numIncoming = ir::phiIncomingCount(instView.opcode());
             for (uint8_t i = 0; i < numIncoming; ++i) {
                 uint32_t srcBlockOff = instView.arg(i * 2);
+                // Skip incoming edges from unreachable blocks (e.g., dead
+                // branches eliminated by emitCondBr constant folding).
+                if (blockMap.find(srcBlockOff) == blockMap.end()) {
+                    continue;
+                }
                 ir::IROp valOp = instView.arg(i * 2 + 1);
                 llvm::Value* val = getValue(valOp);
                 llvm::BasicBlock* srcBB = blockMap.at(srcBlockOff);

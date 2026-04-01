@@ -31,14 +31,14 @@ cmake --build build -j"$(nproc)"
 
 # 4. Test
 step "4/6 Test (Release)"
-cd build && ctest --output-on-failure && cd "$ROOT"
+(cd build && ctest --output-on-failure)
 
 # 5. Sanitizers (ASan + UBSan)
 step "5/6 Sanitizers (ASan + UBSan)"
 cmake -B build-san -DCMAKE_BUILD_TYPE=Debug \
   -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -Wall -Wextra"
 cmake --build build-san -j"$(nproc)"
-cd build-san && ctest --output-on-failure && cd "$ROOT"
+(cd build-san && ctest --output-on-failure)
 
 # 6. Coverage
 if [ "$SKIP_COVERAGE" = true ]; then
@@ -47,17 +47,16 @@ else
   step "6/6 Coverage"
   cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="--coverage -Wall -Wextra"
   cmake --build build-debug -j"$(nproc)"
-  cd build-debug && ctest --output-on-failure
-  lcov --capture --directory . --output-file coverage.info --ignore-errors mismatch 2>/dev/null \
-    || lcov --capture --directory . --output-file coverage.info
-  lcov --remove coverage.info '/usr/*' '*/third_party/*' '*/test/*' '*/_deps/*' --output-file coverage.info
-  COVERAGE=$(lcov --summary coverage.info 2>&1 | grep 'lines' | grep -oP '[\d.]+(?=%)')
+  (cd build-debug && ctest --output-on-failure)
+  lcov --capture --directory build-debug --output-file build-debug/coverage.info --ignore-errors mismatch 2>/dev/null \
+    || lcov --capture --directory build-debug --output-file build-debug/coverage.info
+  lcov --remove build-debug/coverage.info '/usr/*' '*/third_party/*' '*/test/*' '*/_deps/*' --output-file build-debug/coverage.info
+  COVERAGE=$(lcov --summary build-debug/coverage.info 2>&1 | grep 'lines' | grep -oP '[\d.]+(?=%)')
   echo "Line coverage: ${COVERAGE}%"
   if awk "BEGIN{exit ($COVERAGE < 90.0) ? 0 : 1}"; then
     echo "FAIL: coverage ${COVERAGE}% < 90% threshold"
     exit 1
   fi
-  cd "$ROOT"
 fi
 
 echo -e "\n=== All checks passed ==="
