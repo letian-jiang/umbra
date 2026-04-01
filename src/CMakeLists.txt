@@ -47,6 +47,7 @@ target_include_directories(umbra_lib PUBLIC
 target_link_libraries(umbra_lib PUBLIC
     libpg_query
     asmjit
+    readline
 )
 
 # ── Optional LLVM backend ──────────────────────────────────────────────────
