@@ -10,11 +10,10 @@ namespace umbra::codegen {
 
 /// ProjectionTranslator — evaluates output expressions.
 ///
-/// For Q1, the projection computes final AVG = SUM/COUNT and passes
-/// through group-by keys and other aggregated values.
-/// Input tuple format: [group_key_0, group_key_1, agg_0, agg_1, ..., agg_N]
+/// For aggregate queries, the input tuple is [group_keys..., agg_states...].
 /// The projection expressions reference group keys via BoundGroupRef
-/// and aggregate results via BoundAggRef.
+/// and aggregate results via BoundAggRef. numGroupKeys on the physical
+/// operator determines the boundary between keys and aggregates.
 class ProjectionTranslator : public OperatorTranslator {
    public:
     explicit ProjectionTranslator(const optimizer::PhysicalProjection* proj);
@@ -36,9 +35,11 @@ class ProjectionTranslator : public OperatorTranslator {
     OperatorTranslator* child_{nullptr};
 
     /// Evaluate a projection expression.
-    /// The input tuple contains [group_keys..., agg_states...].
-    static SQLValue evaluateProjectionExpr(CompilationContext& ctx, const binder::BoundExpr* expr,
-                                           const std::vector<SQLValue>& tuple);
+    SQLValue evaluateProjectionExpr(CompilationContext& ctx, const binder::BoundExpr* expr,
+                                    const std::vector<SQLValue>& tuple);
+
+    /// Get column indices from the child table scan (for non-aggregate projections).
+    [[nodiscard]] std::vector<uint32_t> getInputColumnIndices() const;
 };
 
 }  // namespace umbra::codegen
