@@ -108,7 +108,7 @@ void LiveSpanAnalysis::computeRPO(const ir::Program& program, uint32_t entryBloc
 
 void LiveSpanAnalysis::analyze(const ir::Program& program, ir::FunctionId func) {
     const auto& entry = program.functionEntry(func);
-    assert(entry.entryBlockOffset != ir::INVALID_BLOCK);
+    assert(entry.entryBlockOffset != ir::IR_INVALID_BLOCK);
 
     computeRPO(program, entry.entryBlockOffset);
 

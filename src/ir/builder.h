@@ -185,7 +185,7 @@ class IRBuilder {
     std::vector<FunctionMeta> meta_;
 
     /// Current insertion block ID.
-    BlockId currentBlock_ = INVALID_BLOCK;
+    BlockId currentBlock_ = IR_INVALID_BLOCK;
     /// Current function ID.
     FunctionId currentFunction_ = UINT32_MAX;
     /// Next block ID.

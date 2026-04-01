@@ -17,7 +17,7 @@ FunctionId IRBuilder::createFunction(const std::string& name, TypeId returnType,
                                      const std::vector<TypeId>& paramTypes) {
     auto id = static_cast<FunctionId>(functions_.size());
     // Entry block will be set when setInsertPoint is first called for a block of this function.
-    functions_.push_back({INVALID_BLOCK});
+    functions_.push_back({IR_INVALID_BLOCK});
     FunctionMeta m;
     m.numParams = static_cast<uint32_t>(paramTypes.size());
     m.returnType = returnType;
@@ -43,6 +43,11 @@ void IRBuilder::setInsertPoint(BlockId block) {
     // If this block hasn't been started yet, record its offset in the block buffer.
     if (blockOffsets_.find(block) == blockOffsets_.end()) {
         blockOffsets_[block] = static_cast<uint32_t>(blockBuffer_.size());
+    }
+    // Clear constant dedup cache when switching blocks to prevent
+    // cross-block reuse where the defining block may not dominate the use.
+    if (block != currentBlock_) {
+        constDedup_.clear();
     }
     currentBlock_ = block;
 }
@@ -502,7 +507,7 @@ void IRBuilder::eliminateDeadCode(Program& program) {
     // Step 1: Find all reachable blocks via BFS from each function's entry block.
     std::unordered_set<uint32_t> reachableBlockOffsets;
     for (const auto& func : functions) {
-        if (func.entryBlockOffset == INVALID_BLOCK) {
+        if (func.entryBlockOffset == IR_INVALID_BLOCK) {
             continue;  // Host function, no blocks.
         }
         std::queue<uint32_t> worklist;

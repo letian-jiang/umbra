@@ -156,7 +156,7 @@ std::string formatValue(int64_t value, SQLType type) {
             return formatDate(static_cast<int32_t>(value));
         case SQLTypeId::CHAR:
             if (type.maxLen == 1) {
-                return {1, static_cast<char>(value)};
+                return std::string(1, static_cast<char>(value));
             } else {
                 // CHAR(n>1): value is a pointer to the fixed-length data.
                 // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)

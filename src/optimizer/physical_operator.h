@@ -61,6 +61,7 @@ struct PhysicalProjection : PhysicalOperator {
     PhysicalOperator* child;
     std::vector<binder::BoundExpr*> expressions;
     std::vector<std::string> aliases;
+    uint32_t numGroupKeys{0};  // Number of group-by keys from child aggregate (0 if no agg).
 
     explicit PhysicalProjection(PhysicalOperator* ch)
         : PhysicalOperator(PhysicalNodeKind::PROJECTION), child(ch) {}

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <string_view>
+#include <utility>
 
 #include "storage/tbl_loader.h"
 
@@ -32,7 +34,20 @@ BindResult Binder::bind(const parser::SelectStmt& stmt) {
     auto* afterFilter = bindWhere(scan, stmt.whereClause);
 
     // 3. SELECT + GROUP BY (aggregate analysis)
-    if (!stmt.groupBy.empty()) {
+    // Detect aggregates in SELECT list even without explicit GROUP BY
+    // (e.g., "SELECT SUM(x) FROM t" is a global aggregate).
+    bool hasGroupBy = !stmt.groupBy.empty();
+    bool hasAggregates = false;
+    if (!hasGroupBy) {
+        for (const auto* selectExpr : stmt.selectList) {
+            if (containsAggregate(selectExpr)) {
+                hasAggregates = true;
+                break;
+            }
+        }
+    }
+
+    if (hasGroupBy || hasAggregates) {
         auto analysis = analyzeAggregates(stmt);
 
         // Build aggregate node
@@ -145,7 +160,7 @@ BoundExpr* Binder::bindExpr(const parser::Expr* expr) {
             return bindExpr(aliased->expr);
         }
         case parser::ExprKind::CAST_EXPR:
-            throw BindError("explicit CAST not supported in MVP");
+            return bindCastExpr(static_cast<const parser::CastExpr*>(expr));
     }
     throw BindError("unknown expression kind");
 }
@@ -166,8 +181,9 @@ BoundExpr* Binder::bindLiteral(const parser::Literal* lit) {
             return allocExpr<BoundLiteral>(SQLType::date(), static_cast<int64_t>(daysSinceEpoch));
         }
         case parser::LiteralType::DECIMAL: {
-            int64_t val = parseDecimal(lit->strValue, 2);
-            return allocExpr<BoundLiteral>(SQLType::decimal(15, 2), val);
+            auto [precision, scale] = inferDecimalLiteral(lit->strValue);
+            int64_t val = parseDecimal(lit->strValue, scale);
+            return allocExpr<BoundLiteral>(SQLType::decimal(precision, scale), val);
         }
         case parser::LiteralType::INTERVAL:
             throw BindError("standalone INTERVAL not supported; use DATE arithmetic");
@@ -680,10 +696,11 @@ BoundExpr* Binder::rewriteExprForProjection(const parser::Expr* expr,
             auto* sumRef = allocExpr<BoundAggRef>(sumIdx, aggregates[sumIdx]->resultType);
             auto* countRef = allocExpr<BoundAggRef>(countIdx, aggregates[countIdx]->resultType);
 
-            // Determine result type for division
+            // Determine result type for division.
+            // Integer AVG produces DECIMAL; DECIMAL AVG keeps the SUM type.
             SQLType divResultType = aggregates[sumIdx]->resultType;
-            if (divResultType.id == SQLTypeId::BIGINT) {
-                divResultType = SQLType::decimal(15, 2);
+            if (divResultType.id == SQLTypeId::BIGINT || divResultType.id == SQLTypeId::INTEGER) {
+                divResultType = SQLType::decimal(18, 4);
             }
 
             // Cast count to match sum type for division
@@ -757,6 +774,70 @@ Binder::AggregateAnalysis Binder::analyzeAggregates(const parser::SelectStmt& st
     }
 
     return result;
+}
+
+// ── Explicit CAST Binding ───────────────────────────────────────────────────
+
+BoundExpr* Binder::bindCastExpr(const parser::CastExpr* castExpr) {
+    auto* inner = bindExpr(castExpr->expr);
+    SQLType targetType = resolveTypeName(castExpr->targetTypeName);
+    if (inner->resultType.id == targetType.id &&
+        inner->resultType.precision == targetType.precision &&
+        inner->resultType.scale == targetType.scale) {
+        return inner;  // No-op cast.
+    }
+    return insertCast(inner, targetType);
+}
+
+SQLType Binder::resolveTypeName(const std::string& name) {
+    std::string lower = name;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char ch) { return std::tolower(ch); });
+    if (lower == "int" || lower == "int4" || lower == "integer") {
+        return SQLType::integer();
+    }
+    if (lower == "bigint" || lower == "int8") {
+        return SQLType::bigint();
+    }
+    if (lower == "date") {
+        return SQLType::date();
+    }
+    if (lower == "bool" || lower == "boolean") {
+        return SQLType::boolean();
+    }
+    if (lower == "numeric" || lower == "decimal") {
+        return SQLType::decimal(18, 4);
+    }
+    throw BindError("unsupported CAST target type: " + name);
+}
+
+// ── Decimal Literal Inference ───────────────────────────────────────────────
+
+std::pair<int, int> Binder::inferDecimalLiteral(const std::string& str) {
+    // Find decimal point.
+    auto dotPos = str.find('.');
+    if (dotPos == std::string::npos) {
+        // No decimal point: integer-like decimal, scale 0.
+        auto digits = static_cast<int>(str.size());
+        if (!str.empty() && (str[0] == '-' || str[0] == '+')) {
+            --digits;
+        }
+        return {std::max(digits, 1), 0};
+    }
+
+    // Count digits before and after decimal point.
+    std::string_view sv(str);
+    size_t start = 0;
+    if (!sv.empty() && (sv[0] == '-' || sv[0] == '+')) {
+        start = 1;
+    }
+    auto intDigits = static_cast<int>(dotPos - start);
+    auto fracDigits = static_cast<int>(sv.size() - dotPos - 1);
+    int precision = intDigits + fracDigits;
+    if (precision == 0) {
+        precision = 1;
+    }
+    return {precision, fracDigits};
 }
 
 }  // namespace umbra::binder
