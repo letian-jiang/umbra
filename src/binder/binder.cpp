@@ -464,9 +464,10 @@ SQLType Binder::inferResultType(parser::BinaryOp op, SQLType inputType) {
             return inputType;
         case parser::BinaryOp::MUL:
             if (inputType.id == SQLTypeId::DECIMAL) {
-                // For multiplication, scale adds but we cap at reasonable values
+                // Codegen multiplies raw values then rescales back to the input scale,
+                // so the result keeps the same scale as the (common) input type.
                 return SQLType::decimal(std::min(static_cast<int>(inputType.precision) * 2, 38),
-                                        std::min(static_cast<int>(inputType.scale) * 2, 18));
+                                        inputType.scale);
             }
             return inputType;
         case parser::BinaryOp::DIV:
