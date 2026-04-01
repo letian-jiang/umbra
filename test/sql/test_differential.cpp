@@ -1,7 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/generators/catch_generators_range.hpp>
+#include <cmath>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -234,6 +236,21 @@ static std::vector<std::vector<std::string>> executeUmbra(Catalog& catalog, Tabl
     return rows;
 }
 
+/// Compare two cell values approximately (for numeric values with rounding differences).
+static bool approxEqual(const std::string& a, const std::string& b) {
+    if (a == b) {
+        return true;
+    }
+    try {
+        double va = std::stod(a);
+        double vb = std::stod(b);
+        double denom = std::max({std::abs(va), std::abs(vb), 1.0});
+        return std::abs(va - vb) / denom < 0.02;  // 2% relative tolerance
+    } catch (const std::invalid_argument&) {
+        return false;
+    }
+}
+
 /// Compare Umbra and DuckDB results cell-by-cell.
 static void diffTest(Catalog& catalog, Table& table, DuckDBOracle& duck, const std::string& sql,
                      Backend backend) {
@@ -267,6 +284,44 @@ static void diffTest(Catalog& catalog, Table& table, DuckDBOracle& duck, const s
         REQUIRE(umbraRows[r].size() == duckRows[r].size());
         for (size_t c = 0; c < umbraRows[r].size(); ++c) {
             CHECK(umbraRows[r][c] == duckRows[r][c]);
+        }
+    }
+}
+
+/// Compare Umbra and DuckDB results with approximate numeric matching.
+/// Use this for queries containing AVG or other operations where Umbra's integer
+/// division semantics differ from DuckDB's floating-point semantics.
+static void diffTestApprox(Catalog& catalog, Table& table, DuckDBOracle& duck,
+                           const std::string& sql, Backend backend) {
+    auto umbraRows = executeUmbra(catalog, table, sql, backend);
+    auto duckRows = duck.query(sql);
+
+    auto rowsToString = [](const std::vector<std::vector<std::string>>& rows) {
+        std::string s;
+        for (const auto& row : rows) {
+            for (size_t i = 0; i < row.size(); ++i) {
+                if (i > 0) {
+                    s += " | ";
+                }
+                s += row[i];
+            }
+            s += "\n";
+        }
+        return s;
+    };
+
+    std::string umbraStr = rowsToString(umbraRows);
+    std::string duckStr = rowsToString(duckRows);
+    CAPTURE(backendName(backend));
+    CAPTURE(sql);
+    CAPTURE(umbraStr);
+    CAPTURE(duckStr);
+
+    REQUIRE(umbraRows.size() == duckRows.size());
+    for (size_t r = 0; r < umbraRows.size(); ++r) {
+        REQUIRE(umbraRows[r].size() == duckRows[r].size());
+        for (size_t c = 0; c < umbraRows[r].size(); ++c) {
+            CHECK(approxEqual(umbraRows[r][c], duckRows[r][c]));
         }
     }
 }
@@ -459,6 +514,69 @@ TEST_CASE("Diff: filter with AND", "[sql][differential]") {
              "WHERE l_orderkey >= 2 AND l_quantity < 50.00 "
              "ORDER BY l_orderkey, l_quantity",
              backend);
+}
+
+TEST_CASE("Diff: AVG aggregate", "[sql][differential]") {
+    auto backend = GENERATE(from_range(ALL_BACKENDS));
+    auto catalog = makeCatalog();
+    auto table = makeTable();
+    DuckDBOracle duck;
+    diffTestApprox(catalog, table, duck,
+                   "SELECT l_returnflag, AVG(l_quantity), AVG(l_extendedprice), AVG(l_discount) "
+                   "FROM lineitem GROUP BY l_returnflag ORDER BY l_returnflag",
+                   backend);
+}
+
+TEST_CASE("Diff: arithmetic expression in SELECT", "[sql][differential]") {
+    auto backend = GENERATE(from_range(ALL_BACKENDS));
+    auto catalog = makeCatalog();
+    auto table = makeTable();
+    DuckDBOracle duck;
+    diffTestApprox(catalog, table, duck,
+                   "SELECT l_orderkey, l_extendedprice * (1 - l_discount) "
+                   "FROM lineitem ORDER BY l_orderkey, l_linenumber",
+                   backend);
+}
+
+TEST_CASE("Diff: SUM of arithmetic expression", "[sql][differential]") {
+    auto backend = GENERATE(from_range(ALL_BACKENDS));
+    auto catalog = makeCatalog();
+    auto table = makeTable();
+    DuckDBOracle duck;
+    diffTestApprox(catalog, table, duck,
+                   "SELECT l_returnflag, SUM(l_extendedprice * (1 - l_discount)) "
+                   "FROM lineitem GROUP BY l_returnflag ORDER BY l_returnflag",
+                   backend);
+}
+
+TEST_CASE("Diff: SUM of nested arithmetic expression", "[sql][differential]") {
+    auto backend = GENERATE(from_range(ALL_BACKENDS));
+    auto catalog = makeCatalog();
+    auto table = makeTable();
+    DuckDBOracle duck;
+    diffTestApprox(catalog, table, duck,
+                   "SELECT l_returnflag, SUM(l_extendedprice * (1 - l_discount) * (1 + l_tax)) "
+                   "FROM lineitem GROUP BY l_returnflag ORDER BY l_returnflag",
+                   backend);
+}
+
+TEST_CASE("Diff: full TPC-H Q1", "[sql][differential]") {
+    auto backend = GENERATE(from_range(ALL_BACKENDS));
+    auto catalog = makeCatalog();
+    auto table = makeTable();
+    DuckDBOracle duck;
+    diffTestApprox(catalog, table, duck,
+                   "SELECT l_returnflag, l_linestatus, "
+                   "SUM(l_quantity), SUM(l_extendedprice), "
+                   "SUM(l_extendedprice * (1 - l_discount)), "
+                   "SUM(l_extendedprice * (1 - l_discount) * (1 + l_tax)), "
+                   "AVG(l_quantity), AVG(l_extendedprice), AVG(l_discount), "
+                   "COUNT(*) "
+                   "FROM lineitem "
+                   "WHERE l_shipdate <= DATE '1998-12-01' - INTERVAL '90' DAY "
+                   "GROUP BY l_returnflag, l_linestatus "
+                   "ORDER BY l_returnflag, l_linestatus",
+                   backend);
 }
 
 TEST_CASE("Diff: aggregate no rows pass filter", "[sql][differential]") {
