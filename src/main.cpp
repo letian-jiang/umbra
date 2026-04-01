@@ -22,7 +22,7 @@ bool isInteractive() {
 
 int main(int argc, char* argv[]) {
     // Parse command-line arguments.
-    std::string dataDir = ".";
+    std::string dataDir = "data/tpch";
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];  // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
         if ((arg == "--data" || arg == "-d") && i + 1 < argc) {
