@@ -358,8 +358,7 @@ void FlyingStartCompiler::translateFunction(ir::Program& program, ir::FunctionId
                 ir::forEachValueArg(inst, [&](ir::IROp op) {
                     if (lsa_.isLastUse(op, preSeq) && lsa_.blockOf(op) == blockOff) {
                         // Skip freeing base/index operands of deferred GEPs.
-                        if (isDeferredGep &&
-                            (op == inst.arg(0) || op == inst.arg(1))) {
+                        if (isDeferredGep && (op == inst.arg(0) || op == inst.arg(1))) {
                             return;
                         }
                         const auto* loc = regAlloc_.getLocation(op);

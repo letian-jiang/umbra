@@ -173,8 +173,7 @@ PhysicalOperator* Optimizer::generatePhysicalPlan(const binder::BoundLogicalOper
             }
 
             // If child is not a scan, generate child and keep filter separate.
-            // For MVP (Q1), filter is always directly above scan after binder,
-            // so this path shouldn't be reached. But we handle it for correctness.
+            // Currently filter is always directly above scan after binding.
             auto* child = generatePhysicalPlan(filter->child, requiredColumns);
             // Wrap in a projection that passes through (not ideal but safe)
             return child;
@@ -202,6 +201,11 @@ PhysicalOperator* Optimizer::generatePhysicalPlan(const binder::BoundLogicalOper
             auto* physProj = allocOp<PhysicalProjection>(child);
             physProj->expressions = proj->expressions;
             physProj->aliases = proj->aliases;
+            // Set numGroupKeys if the child is a hash aggregate.
+            if (child->kind == PhysicalNodeKind::HASH_AGGREGATE) {
+                physProj->numGroupKeys = static_cast<uint32_t>(
+                    static_cast<PhysicalHashAggregate*>(child)->groupByKeys.size());
+            }
             return physProj;
         }
     }
@@ -219,16 +223,13 @@ std::vector<Pipeline> Optimizer::decomposePipelines(PhysicalOperator* root) {
     }
 
     // Walk the physical plan tree from root to leaves, identifying
-    // pipeline breaks at HashAggregate and Sort boundaries.
+    // pipeline breaks at HashAggregate boundaries.
     //
-    // For Q1, the physical plan is:
-    //   Sort -> Projection -> HashAggregate -> TableScan(filter)
+    // Example (aggregate query):
+    //   Pipeline 0 (build): source=TableScan, sink=HashAggregate(build)
+    //   Pipeline 1 (scan):  source=HashAggregate(scan), sink=Result
     //
-    // Pipeline 1 (build):
-    //   source=TableScan, sink=HashAggregate(build)
-    //
-    // Pipeline 2 (scan + finalize):
-    //   source=HashAggregate(scan), operators=[Projection, Sort], sink=Result
+    // Non-aggregate queries produce a single pipeline.
 
     // Collect the linear chain of operators (from root down to leaf)
     std::vector<PhysicalOperator*> chain;

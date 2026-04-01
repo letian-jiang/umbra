@@ -57,9 +57,10 @@ struct CodegenResult {
 /// generates IR for each pipeline using Tidy Tuples operator translators,
 /// and executes them through the selected backend (Interpreter or Flying Start).
 ///
-/// For Q1:
-///   Pipeline 0 (build): TableScan(filter) -> HashAggregate(build)
-///   Pipeline 1 (scan):  HashAggregate(scan) -> Projection -> Sort -> ResultWriter
+/// Supported plan shapes:
+///   Aggregate:   Pipeline 0 (build): TableScan(filter) -> HashAggregate(build)
+///                Pipeline 1 (scan):  HashAggregate(scan) -> [Proj ->] [Sort ->] ResultWriter
+///   Non-agg:     Pipeline 0: TableScan(filter) -> [Proj ->] [Sort ->] ResultWriter
 class PipelineExecutor {
    public:
     /// Construct with the specified backend (default: interpreter).
@@ -88,11 +89,9 @@ class PipelineExecutor {
     /// Generate x86-64 assembly text for all pipelines (codegen + compile, no execution).
     std::string generateASM(const optimizer::OptimizeResult& result);
 
-    /// Execute a single pipeline (for testing).
-    /// @param pipelineIndex Which pipeline to execute (0 = build, 1 = scan).
-    /// @param result Optimization result.
-    /// @param table The table to scan.
-    /// @param collector Result collector.
+    /// Execute a single pipeline by index (for testing).
+    /// For aggregate queries: 0 = build, 1 = scan.
+    /// For non-aggregate queries: 0 = the only pipeline.
     void executeSingle(size_t pipelineIndex, const optimizer::OptimizeResult& result, Table& table,
                        ResultCollector& collector);
 
@@ -117,12 +116,21 @@ class PipelineExecutor {
     /// The hash aggregate translator, shared between pipelines.
     std::unique_ptr<codegen::HashAggregateTranslator> hashAggTranslator_;
 
-    /// Execute pipeline 0 (build side: scan + aggregate).
+    /// Execute build pipeline (scan + aggregate).
     void executeBuildPipeline(const optimizer::OptimizeResult& result, Table& table);
 
-    /// Execute pipeline 1 (scan side: agg scan + projection + sort + result).
+    /// Execute scan pipeline (agg scan + projection + sort + result).
     void executeScanPipeline(const optimizer::OptimizeResult& result, Table& table,
                              ResultCollector& collector);
+
+    /// Execute a single-pipeline query (no aggregate).
+    void executeSinglePipeline(const optimizer::OptimizeResult& result, Table& table,
+                               ResultCollector& collector);
+
+    /// Apply host-side sort on materialized results.
+    void applyHostSort(const optimizer::PhysicalSort* sortOp,
+                       const optimizer::PhysicalProjection* projOp,
+                       const optimizer::PhysicalTableScan* scanOp, ResultCollector& collector);
 
     /// Build a chain: [Sort →] [Proj →] source, rooted at ResultWriter.
     /// Sets child pointers and returns {resultWriter, bottomParent, all owned translators}.
