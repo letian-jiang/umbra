@@ -55,7 +55,8 @@ uint64_t softCrc32(uint64_t seed, uint64_t data) {
 uint64_t Interpreter::execute(ir::Program& program, ir::FunctionId func,
                               std::span<const uint64_t> args) {
     const auto& entry = program.functionEntry(func);
-    assert(entry.entryBlockOffset != ir::IR_INVALID_BLOCK && "Cannot execute host function directly");
+    assert(entry.entryBlockOffset != ir::IR_INVALID_BLOCK &&
+           "Cannot execute host function directly");
 
     // Allocate value slots indexed by instruction buffer byte offset.
     slots_.assign(program.instBuffer().size(), 0);

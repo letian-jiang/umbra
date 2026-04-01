@@ -5,11 +5,10 @@
 #include <string>
 #include <vector>
 
-#include "duckdb.hpp"
-
 #include "binder/binder.h"
 #include "catalog/catalog.h"
 #include "common/types.h"
+#include "duckdb.hpp"
 #include "execution/pipeline.h"
 #include "execution/result_collector.h"
 #include "optimizer/optimizer.h"
@@ -108,16 +107,11 @@ static Catalog makeCatalog() {
     TableDef def;
     def.name = "lineitem";
     def.columns = {
-        {"l_orderkey", SQLType::integer(), 0},
-        {"l_partkey", SQLType::integer(), 1},
-        {"l_suppkey", SQLType::integer(), 2},
-        {"l_linenumber", SQLType::integer(), 3},
-        {"l_quantity", SQLType::decimal(15, 2), 4},
-        {"l_extendedprice", SQLType::decimal(15, 2), 5},
-        {"l_discount", SQLType::decimal(15, 2), 6},
-        {"l_tax", SQLType::decimal(15, 2), 7},
-        {"l_returnflag", SQLType::fixedChar(1), 8},
-        {"l_linestatus", SQLType::fixedChar(1), 9},
+        {"l_orderkey", SQLType::integer(), 0},      {"l_partkey", SQLType::integer(), 1},
+        {"l_suppkey", SQLType::integer(), 2},       {"l_linenumber", SQLType::integer(), 3},
+        {"l_quantity", SQLType::decimal(15, 2), 4}, {"l_extendedprice", SQLType::decimal(15, 2), 5},
+        {"l_discount", SQLType::decimal(15, 2), 6}, {"l_tax", SQLType::decimal(15, 2), 7},
+        {"l_returnflag", SQLType::fixedChar(1), 8}, {"l_linestatus", SQLType::fixedChar(1), 9},
         {"l_shipdate", SQLType::date(), 10},
     };
     catalog.addTable(std::move(def));
@@ -218,8 +212,7 @@ static const char* backendName(Backend b) {
 
 /// Execute SQL against Umbra and return rows as string cells.
 static std::vector<std::vector<std::string>> executeUmbra(Catalog& catalog, Table& table,
-                                                          const std::string& sql,
-                                                          Backend backend) {
+                                                          const std::string& sql, Backend backend) {
     auto parseResult = parser::Parser::parse(sql);
     binder::Binder binder(catalog);
     auto bindResult = binder.bind(*parseResult.stmt);
@@ -300,7 +293,8 @@ TEST_CASE("Diff: simple scan", "[sql][differential]") {
     auto table = makeTable();
     DuckDBOracle duck;
     diffTest(catalog, table, duck,
-             "SELECT l_orderkey, l_quantity FROM lineitem ORDER BY l_orderkey, l_quantity", backend);
+             "SELECT l_orderkey, l_quantity FROM lineitem ORDER BY l_orderkey, l_quantity",
+             backend);
 }
 
 TEST_CASE("Diff: scan with integer filter", "[sql][differential]") {
@@ -414,7 +408,8 @@ TEST_CASE("Diff: count with filter", "[sql][differential]") {
     auto catalog = makeCatalog();
     auto table = makeTable();
     DuckDBOracle duck;
-    diffTest(catalog, table, duck, "SELECT COUNT(*) FROM lineitem WHERE l_discount > 0.05", backend);
+    diffTest(catalog, table, duck, "SELECT COUNT(*) FROM lineitem WHERE l_discount > 0.05",
+             backend);
 }
 
 TEST_CASE("Diff: multiple aggregates", "[sql][differential]") {

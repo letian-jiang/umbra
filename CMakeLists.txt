@@ -38,43 +38,43 @@ set(ASMJIT_TEST OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(Catch2 asmjit)
 
-# libpg_query — built via its own Makefile
-include(ExternalProject)
+# libpg_query — uses Makefile, so we fetch with FetchContent (configure-time
+# download) but build via a custom target instead of add_subdirectory.
 include(ProcessorCount)
 ProcessorCount(NPROC)
 if(NOT NPROC OR NPROC EQUAL 0)
     set(NPROC 1)
 endif()
 
-ExternalProject_Add(
-    libpg_query_ext
+FetchContent_Declare(
+    libpg_query
     GIT_REPOSITORY https://github.com/pganalyze/libpg_query.git
     GIT_TAG        17-6.0.0
     GIT_SHALLOW    TRUE
-    CONFIGURE_COMMAND ""
-    BUILD_COMMAND make -j${NPROC} -C <SOURCE_DIR>
-    BUILD_IN_SOURCE TRUE
-    INSTALL_COMMAND ""
-    BUILD_BYPRODUCTS <SOURCE_DIR>/libpg_query.a
+)
+FetchContent_GetProperties(libpg_query)
+if(NOT libpg_query_POPULATED)
+    FetchContent_Populate(libpg_query)
+endif()
+
+add_custom_target(libpg_query_build
+    COMMAND make -j${NPROC} -C ${libpg_query_SOURCE_DIR}
+    BYPRODUCTS ${libpg_query_SOURCE_DIR}/libpg_query.a
 )
 
-ExternalProject_Get_Property(libpg_query_ext SOURCE_DIR)
-set(LIBPG_QUERY_SOURCE_DIR ${SOURCE_DIR})
-
-# Create an imported target for libpg_query
 add_library(libpg_query STATIC IMPORTED GLOBAL)
 set_target_properties(libpg_query PROPERTIES
-    IMPORTED_LOCATION ${LIBPG_QUERY_SOURCE_DIR}/libpg_query.a
+    IMPORTED_LOCATION ${libpg_query_SOURCE_DIR}/libpg_query.a
 )
 target_include_directories(libpg_query INTERFACE
-    ${LIBPG_QUERY_SOURCE_DIR}
-    ${LIBPG_QUERY_SOURCE_DIR}/vendor
+    ${libpg_query_SOURCE_DIR}
+    ${libpg_query_SOURCE_DIR}/vendor
 )
-add_dependencies(libpg_query libpg_query_ext)
+add_dependencies(libpg_query libpg_query_build)
 
 # ── Optional LLVM backend ──────────────────────────────────────────────────
 
-option(LLVM_BACKEND "Enable LLVM JIT backend (requires LLVM 14+)" OFF)
+option(LLVM_BACKEND "Enable LLVM JIT backend (requires LLVM 14+)" ON)
 
 if(LLVM_BACKEND)
     find_package(LLVM 14 REQUIRED CONFIG)

@@ -670,7 +670,10 @@ TEST_CASE("Cast instructions", "[ir]") {
     auto ext = builder.emitSExt(TypeId::INT64, arg);
     auto trunc = builder.emitTrunc(TypeId::INT32, ext);
     auto zext = builder.emitZExt(TypeId::INT64, trunc);
+    // emitBitcast folds away when source and target have the same size.
     auto bc = builder.emitBitcast(TypeId::UINT64, zext);
+    REQUIRE(bc == zext);  // INT64→UINT64 same size, folded to identity
+
     auto p2i = builder.emitPtr2Int(TypeId::UINT64, arg);
     auto i2p = builder.emitInt2Ptr(bc);
     builder.emitRet(TypeId::INT64, ext);
@@ -681,7 +684,6 @@ TEST_CASE("Cast instructions", "[ir]") {
     REQUIRE(program.instructionAt(ext).type() == TypeId::INT64);
     REQUIRE(program.instructionAt(trunc).opcode() == Opcode::TRUNC);
     REQUIRE(program.instructionAt(zext).opcode() == Opcode::ZEXT);
-    REQUIRE(program.instructionAt(bc).opcode() == Opcode::BITCAST);
     REQUIRE(program.instructionAt(p2i).opcode() == Opcode::PTR2INT);
     REQUIRE(program.instructionAt(i2p).opcode() == Opcode::INT2PTR);
     REQUIRE(program.instructionAt(i2p).type() == TypeId::PTR);

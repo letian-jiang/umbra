@@ -374,12 +374,15 @@ void PipelineExecutor::executeBuildPipeline(const optimizer::OptimizeResult& res
 
     // For ADAPTIVE, compile with FS and start async LLVM.
     // For other backends, compile with the selected backend only.
+    // sharedProgram must outlive jitFunc: FS JIT code holds raw pointers to
+    // host functions owned by the Program.
     AsyncCompiler asyncLlvm;
+    std::shared_ptr<ir::Program> sharedProgram;
 
     if (backend_ == Backend::ADAPTIVE) {
         // Start async LLVM compile first — gives LLVM a head start while FS compiles.
         // Both backends read the Program concurrently (read-only, no data race).
-        auto sharedProgram = std::make_shared<ir::Program>(std::move(program));
+        sharedProgram = std::make_shared<ir::Program>(std::move(program));
         asyncLlvm.startAsync(sharedProgram, funcId);
 
         // Flying Start compile (instant, ~0.2ms).
@@ -582,10 +585,13 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
 #endif
 
     // For ADAPTIVE, compile with FS and start async LLVM.
+    // sharedProgram must outlive jitFunc: FS JIT code holds raw pointers to
+    // host functions owned by the Program.
     AsyncCompiler asyncLlvm;
+    std::shared_ptr<ir::Program> sharedProgram;
 
     if (backend_ == Backend::ADAPTIVE) {
-        auto sharedProgram = std::make_shared<ir::Program>(std::move(program));
+        sharedProgram = std::make_shared<ir::Program>(std::move(program));
         asyncLlvm.startAsync(sharedProgram, funcId);
         jitFunc = jitCompiler.compile(*sharedProgram, funcId);
     } else {
@@ -796,10 +802,13 @@ void PipelineExecutor::executeSinglePipeline(const optimizer::OptimizeResult& re
 #ifdef UMBRA_LLVM_BACKEND
     std::unique_ptr<llvm_backend::LLVMCompiler> llvmCompiler;
 #endif
+    // sharedProgram must outlive jitFunc: FS JIT code holds raw pointers to
+    // host functions owned by the Program.
     AsyncCompiler asyncLlvm;
+    std::shared_ptr<ir::Program> sharedProgram;
 
     if (backend_ == Backend::ADAPTIVE) {
-        auto sharedProgram = std::make_shared<ir::Program>(std::move(program));
+        sharedProgram = std::make_shared<ir::Program>(std::move(program));
         asyncLlvm.startAsync(sharedProgram, funcId);
         jitFunc = jitCompiler.compile(*sharedProgram, funcId);
     } else {
