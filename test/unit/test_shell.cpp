@@ -93,7 +93,7 @@ TEST_CASE("Shell dot commands", "[shell]") {
 
     SECTION(".backend show current") {
         REQUIRE(shell.executeStatement(".backend", out, err));
-        REQUIRE(out.str().find("Current backend: interpreter") != std::string::npos);
+        REQUIRE(out.str().find("Current backend: adaptive") != std::string::npos);
     }
 
     SECTION(".backend flying-start") {
