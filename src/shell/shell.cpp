@@ -1,8 +1,12 @@
 #include "shell/shell.h"
 
+#include <readline/history.h>
+#include <readline/readline.h>
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -72,6 +76,22 @@ Shell::Shell(Catalog& catalog, Table& table, ShellConfig config)
     // Eagerly initialize the compile thread pool so the first adaptive query
     // doesn't pay the ~1ms thread creation cost.
     execution::CompileThreadPool::instance();
+
+    // Set up readline history.
+    if (config_.interactive) {
+        // NOLINTNEXTLINE(concurrency-mt-unsafe)
+        const char* home = std::getenv("HOME");
+        if (home != nullptr) {
+            historyFile_ = std::string(home) + "/.umbra_history";
+            read_history(historyFile_.c_str());
+        }
+    }
+}
+
+Shell::~Shell() {
+    if (!historyFile_.empty()) {
+        write_history(historyFile_.c_str());
+    }
 }
 
 void Shell::printBanner(std::ostream& out) const {
@@ -86,7 +106,8 @@ int Shell::run() {
     }
 
     while (true) {
-        std::string stmt = readStatement(std::cin, config_.interactive);
+        std::string stmt = config_.interactive ? readStatementInteractive(std::cin)
+                                               : readStatement(std::cin, false);
         if (stmt.empty()) {
             break;  // EOF
         }
@@ -349,6 +370,61 @@ std::string Shell::readStatement(std::istream& in, bool interactive) {
         // Check for dot commands (single line, no semicolon needed).
         std::string trimmed = trim(buffer);
         if (!trimmed.empty() && trimmed[0] == '.') {
+            return buffer;
+        }
+    }
+}
+
+std::optional<std::string> Shell::readLine(std::istream& in, const char* prompt) {
+    if (config_.interactive) {
+        // NOLINTNEXTLINE(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory)
+        char* line = readline(prompt);
+        if (line == nullptr) {
+            return std::nullopt;
+        }
+        std::string result(line);
+        // NOLINTNEXTLINE(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory)
+        free(line);
+        return result;
+    }
+    std::string line;
+    if (!std::getline(in, line)) {
+        return std::nullopt;
+    }
+    return line;
+}
+
+std::string Shell::readStatementInteractive(std::istream& in) {
+    std::string buffer;
+    bool firstLine = true;
+
+    while (true) {
+        const char* prompt = firstLine ? "umbra> " : "   ...> ";
+        auto line = readLine(in, prompt);
+        if (!line) {
+            return buffer.empty() ? "" : buffer;
+        }
+
+        if (firstLine) {
+            buffer = *line;
+        } else {
+            buffer += "\n" + *line;
+        }
+        firstLine = false;
+
+        // Check for semicolon.
+        if (buffer.find(';') != std::string::npos) {
+            std::string trimmed = trim(buffer);
+            if (!trimmed.empty()) {
+                add_history(trimmed.c_str());
+            }
+            return buffer;
+        }
+
+        // Dot commands are single-line.
+        std::string trimmed = trim(buffer);
+        if (!trimmed.empty() && trimmed[0] == '.') {
+            add_history(trimmed.c_str());
             return buffer;
         }
     }

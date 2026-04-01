@@ -1,6 +1,7 @@
 #pragma once
 
 #include <iostream>
+#include <optional>
 #include <string>
 
 #include "catalog/catalog.h"
@@ -29,6 +30,12 @@ struct ShellConfig {
 class Shell {
    public:
     Shell(Catalog& catalog, Table& table, ShellConfig config);
+    ~Shell();
+
+    Shell(const Shell&) = delete;
+    Shell& operator=(const Shell&) = delete;
+    Shell(Shell&&) = delete;
+    Shell& operator=(Shell&&) = delete;
 
     /// Run the REPL loop. Returns the exit code.
     int run();
@@ -51,12 +58,20 @@ class Shell {
     Catalog& catalog_;
     Table& table_;
     ShellConfig config_;
+    std::string historyFile_;
 
     /// Execute a dot command. Returns true if the shell should continue.
     bool executeDotCommand(const std::string& cmd, std::ostream& out, std::ostream& err);
 
     /// Execute a SQL query and print results.
     void executeQuery(const std::string& sql, std::ostream& out, std::ostream& err);
+
+    /// Read a single line using readline (interactive) or getline (pipe).
+    /// Returns std::nullopt on EOF.
+    std::optional<std::string> readLine(std::istream& in, const char* prompt);
+
+    /// Read a complete statement using readline for interactive mode.
+    std::string readStatementInteractive(std::istream& in);
 };
 
 }  // namespace umbra::shell
