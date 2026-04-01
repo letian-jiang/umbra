@@ -210,6 +210,40 @@ target_link_libraries(test_q1_variants PRIVATE
 )
 add_test(NAME q1_variants COMMAND test_q1_variants)
 
+# SQL: General queries (non-Q1 patterns)
+add_executable(test_general_queries
+    sql/test_general_queries.cpp
+)
+target_link_libraries(test_general_queries PRIVATE
+    umbra_lib
+    Catch2::Catch2WithMain
+)
+add_test(NAME general_queries COMMAND test_general_queries)
+
+# SQL: Differential tests (Umbra vs DuckDB)
+# Requires DuckDB built at /home/ltjiang/workspace/duckdb
+set(DUCKDB_ROOT "/home/ltjiang/workspace/duckdb" CACHE PATH "DuckDB source root")
+set(DUCKDB_LIB_DIR "${DUCKDB_ROOT}/cmake-build-debug/src" CACHE PATH "DuckDB library dir")
+if(EXISTS "${DUCKDB_ROOT}/src/include/duckdb.h" AND EXISTS "${DUCKDB_LIB_DIR}/libduckdb.so")
+    add_executable(test_differential
+        sql/test_differential.cpp
+    )
+    target_include_directories(test_differential SYSTEM PRIVATE "${DUCKDB_ROOT}/src/include")
+    target_link_directories(test_differential PRIVATE "${DUCKDB_LIB_DIR}")
+    target_link_libraries(test_differential PRIVATE
+        umbra_lib
+        Catch2::Catch2WithMain
+        duckdb
+    )
+    add_test(NAME differential COMMAND test_differential)
+    # DuckDB debug build links ASan; preload it so ASan runtime is first.
+    execute_process(COMMAND ${CMAKE_C_COMPILER} -print-file-name=libasan.so
+                    OUTPUT_VARIABLE ASAN_LIB OUTPUT_STRIP_TRAILING_WHITESPACE)
+    set_tests_properties(differential PROPERTIES
+        ENVIRONMENT "LD_PRELOAD=${ASAN_LIB};LD_LIBRARY_PATH=${DUCKDB_LIB_DIR}:$ENV{LD_LIBRARY_PATH}"
+    )
+endif()
+
 # Performance: Q1 benchmark
 add_executable(test_benchmark
     perf/test_benchmark.cpp

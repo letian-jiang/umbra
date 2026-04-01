@@ -21,7 +21,7 @@ HashAggregateTranslator::HashAggregateTranslator(const optimizer::PhysicalHashAg
         keyTypes_.push_back(keyExpr->resultType);
     }
 
-    // Each aggregate state is stored as Int64 (for SUM and COUNT).
+    // Each aggregate state is stored as Int64 (SUM accumulator / COUNT).
     for (size_t i = 0; i < agg_->aggregates.size(); ++i) {
         aggStateTypes_.push_back(SQLType::bigint());
     }

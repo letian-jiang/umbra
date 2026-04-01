@@ -110,7 +110,7 @@ ir::FunctionId CodegenContext::registerHostFunction(const std::string& name, ir:
 
     // Restore insertion point to the original function/block.
     builder_.setCurrentFunction(savedFunction);
-    if (savedBlock != ir::INVALID_BLOCK) {
+    if (savedBlock != ir::IR_INVALID_BLOCK) {
         builder_.setInsertPoint(savedBlock);
     }
 
@@ -275,8 +275,8 @@ IfBuilder::IfBuilder(CodegenContext& ctx, Bool cond)
       thenBlock_(ctx.createBlock()),
       elseBlock_(ctx.createBlock()),
       mergeBlock_(ctx.createBlock()),
-      thenEndBlock_(ir::INVALID_BLOCK),
-      elseEndBlock_(ir::INVALID_BLOCK) {
+      thenEndBlock_(ir::IR_INVALID_BLOCK),
+      elseEndBlock_(ir::IR_INVALID_BLOCK) {
     // Emit conditional branch from current block to then/else.
     ctx_.emitCondBr(cond, thenBlock_, elseBlock_);
     // Start emitting into the then-block.
@@ -329,7 +329,7 @@ LoopBuilder::LoopBuilder(CodegenContext& ctx, const std::vector<ir::IROp>& loopV
     // Back-edge incoming: will be patched in done().
     for (size_t i = 0; i < loopVarInits.size(); ++i) {
         auto phiOp = ctx_.builder().emitPhi(loopVarTypes[i], {{preheaderBlock_, loopVarInits[i]},
-                                                              {ir::INVALID_BLOCK, ir::INVALID_OP}});
+                                                              {ir::IR_INVALID_BLOCK, ir::INVALID_OP}});
         phiOps_.push_back(phiOp);
     }
     // Note: the loop body should check the condition and branch.

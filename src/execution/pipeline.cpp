@@ -261,29 +261,43 @@ PipelineExecutor::PipelineExecutor(Backend backend, uint64_t morselSize)
 
 void PipelineExecutor::execute(const optimizer::OptimizeResult& result, Table& table,
                                ResultCollector& collector) {
-    assert(result.pipelines.size() >= 2 && "Q1 must have at least 2 pipelines");
+    const auto* aggOp = findOperator(result.root, optimizer::PhysicalNodeKind::HASH_AGGREGATE);
 
-    if (profiling_) {
-        profiles_.resize(2);
+    if (aggOp != nullptr) {
+        // 2-pipeline aggregate path.
+        if (profiling_) {
+            profiles_.resize(2);
+        }
+        executeBuildPipeline(result, table);
+        executeScanPipeline(result, table, collector);
+    } else {
+        // Single-pipeline path (no aggregate).
+        if (profiling_) {
+            profiles_.resize(1);
+        }
+        executeSinglePipeline(result, table, collector);
     }
-
-    // Pipeline 0: build side
-    executeBuildPipeline(result, table);
-
-    // Pipeline 1: scan side
-    executeScanPipeline(result, table, collector);
 }
 
 void PipelineExecutor::executeSingle(size_t pipelineIndex, const optimizer::OptimizeResult& result,
                                      Table& table, ResultCollector& collector) {
-    if (pipelineIndex == 0) {
-        executeBuildPipeline(result, table);
-    } else if (pipelineIndex == 1) {
-        // Ensure build pipeline has run first.
-        if (hashAggTranslator_ == nullptr) {
+    const auto* aggOp = findOperator(result.root, optimizer::PhysicalNodeKind::HASH_AGGREGATE);
+
+    if (aggOp != nullptr) {
+        // Aggregate query: pipeline 0 = build, pipeline 1 = scan.
+        if (pipelineIndex == 0) {
             executeBuildPipeline(result, table);
+        } else if (pipelineIndex == 1) {
+            if (hashAggTranslator_ == nullptr) {
+                executeBuildPipeline(result, table);
+            }
+            executeScanPipeline(result, table, collector);
         }
-        executeScanPipeline(result, table, collector);
+    } else {
+        // Non-aggregate query: single pipeline.
+        if (pipelineIndex == 0) {
+            executeSinglePipeline(result, table, collector);
+        }
     }
 }
 
@@ -505,8 +519,8 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
     auto numOutputCols = static_cast<uint32_t>(schema.size());
     collector.setSchema(std::move(schema));
 
-    // Prepare result collector buffer.
-    collector.prepare(1024);  // Max 1024 output rows (plenty for Q1's ~4 rows).
+    // Prepare result collector buffer (upper bound: hash table capacity).
+    collector.prepare(hashAggTranslator_->hashTable().capacity());
 
     // Build output chain: [Sort →] [Proj →] ResultWriter.
     auto chain = buildOutputChain(result, numOutputCols);
@@ -662,34 +676,15 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
     // Materialize results.
     collector.materialize(rtCtx.resultRowCount);
 
-    // Apply sort if needed (host-side sort on materialized results).
-    if (sortOp != nullptr) {
-        std::vector<uint32_t> sortCols;
-        std::vector<bool> ascending;
-        for (const auto& item : sortOp->orderBy) {
-            // Find the column index in the output.
-            // Sort expressions reference group-by keys via BoundGroupRef.
-            if (item.expr->kind == binder::BoundExprKind::GROUP_REF) {
-                const auto* ref = static_cast<const binder::BoundGroupRef*>(item.expr);
-                sortCols.push_back(ref->groupIndex);
-            } else {
-                // Default: sort by column 0.
-                sortCols.push_back(0);
-            }
-            ascending.push_back(item.ascending);
-        }
-        // Verify no CHAR(n>1) sort columns — host-side sort compares raw int64_t
-        // which would be pointer values, not string content.
-        const auto& sch = collector.schema();
-        for (auto col : sortCols) {
-            if (sch[col].type.id == SQLTypeId::CHAR && sch[col].type.maxLen > 1) {
-                throw std::runtime_error("ORDER BY on CHAR(" +
-                                         std::to_string(sch[col].type.maxLen) +
-                                         ") not yet supported");
-            }
-        }
-        collector.sort(sortCols, ascending);
+    // Global aggregate (no GROUP BY) must return one row even with no input rows.
+    // SQL semantics: COUNT(*)=0, SUM=0 for empty input.
+    if (collector.numRows() == 0 && hashAggTranslator_->physicalOp()->groupByKeys.empty()) {
+        std::vector<int64_t> defaultRow(numOutputCols, 0);
+        collector.addRow(defaultRow);
     }
+
+    // Apply sort if needed (host-side sort on materialized results).
+    applyHostSort(sortOp, projOp, nullptr, collector);
 
     codegen::setActiveContext(nullptr);
 
@@ -706,6 +701,275 @@ void PipelineExecutor::executeScanPipeline(const optimizer::OptimizeResult& resu
             profiles_[1].llvmCompileMs = asyncLlvm.compileMs();
         }
     }
+}
+
+// ── Single-pipeline execution (no aggregate) ───────────────────────────────
+
+void PipelineExecutor::executeSinglePipeline(const optimizer::OptimizeResult& result, Table& table,
+                                             ResultCollector& collector) {
+    // Find physical operators.
+    const auto* scanOp = static_cast<const optimizer::PhysicalTableScan*>(
+        findOperator(result.root, optimizer::PhysicalNodeKind::TABLE_SCAN));
+    const auto* projOp = static_cast<const optimizer::PhysicalProjection*>(
+        findOperator(result.root, optimizer::PhysicalNodeKind::PROJECTION));
+    const auto* sortOp = static_cast<const optimizer::PhysicalSort*>(
+        findOperator(result.root, optimizer::PhysicalNodeKind::SORT));
+    assert(scanOp != nullptr && "Query must have a table scan");
+
+    // Determine output schema.
+    std::vector<ResultColumn> schema;
+    if (projOp != nullptr) {
+        for (size_t i = 0; i < projOp->expressions.size(); ++i) {
+            std::string alias =
+                i < projOp->aliases.size() ? projOp->aliases[i] : "col_" + std::to_string(i);
+            schema.push_back({alias, projOp->expressions[i]->resultType});
+        }
+    } else {
+        for (uint32_t colIdx : scanOp->columnIndices) {
+            for (const auto& colDef : scanOp->table->columns) {
+                if (colDef.columnIndex == colIdx) {
+                    schema.push_back({colDef.name, colDef.type});
+                    break;
+                }
+            }
+        }
+    }
+    auto numOutputCols = static_cast<uint32_t>(schema.size());
+    collector.setSchema(std::move(schema));
+
+    // Prepare result collector buffer (upper bound: every row passes filter).
+    collector.prepare(table.rowCount);
+
+    // Build output chain and wire to table scan.
+    auto chain = buildOutputChain(result, numOutputCols);
+    auto scanTranslator = std::make_unique<codegen::TableScanTranslator>(scanOp);
+    scanTranslator->setParent(chain.bottom);
+    if (chain.projTranslator) {
+        chain.projTranslator->setChild(scanTranslator.get());
+    } else if (chain.sortTranslator) {
+        chain.sortTranslator->setChild(scanTranslator.get());
+    } else {
+        chain.resultWriter->setChild(scanTranslator.get());
+    }
+
+    // ── Codegen phase ──────────────────────────────────────────────────
+    auto codegenStart = now();
+
+    codegen::CodegenContext cg;
+    codegen::setActiveContext(&cg);
+
+    auto funcId = cg.createFunction("pipeline_0", ir::TypeId::VOID,
+                                    {ir::TypeId::PTR, ir::TypeId::INT64, ir::TypeId::INT64});
+    codegen::CompilationContext ctx(cg);
+    ctx.runtimeCtx = cg.getArg<codegen::Ptr<codegen::Int8>>(0);
+    ctx.startRow = cg.getArg<codegen::Int64>(1);
+    ctx.endRow = cg.getArg<codegen::Int64>(2);
+
+    chain.resultWriter->produce(ctx);
+
+    cg.emitRetVoid();
+
+    auto codegenEnd = now();
+
+    // ── Compile phase ──────────────────────────────────────────────────
+    auto compileStart = now();
+
+    auto program = cg.finalize();
+
+    // Set up RuntimeContext.
+    table.finalize();
+    RuntimeContext rtCtx{};
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+    rtCtx.columnPtrs = const_cast<void**>(table.columnPtrs());
+    rtCtx.rowCount = table.rowCount;
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    rtCtx.resultBuffer = reinterpret_cast<void*>(collector.buffer());
+    rtCtx.resultRowCount = 0;
+
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    auto ctxArg = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&rtCtx));
+    uint64_t totalItems = table.rowCount;
+
+    // Compile through selected backend.
+    void* jitFunc = nullptr;
+    flying_start::FlyingStartCompiler jitCompiler;
+#ifdef UMBRA_LLVM_BACKEND
+    std::unique_ptr<llvm_backend::LLVMCompiler> llvmCompiler;
+#endif
+    AsyncCompiler asyncLlvm;
+
+    if (backend_ == Backend::ADAPTIVE) {
+        auto sharedProgram = std::make_shared<ir::Program>(std::move(program));
+        asyncLlvm.startAsync(sharedProgram, funcId);
+        jitFunc = jitCompiler.compile(*sharedProgram, funcId);
+    } else {
+        switch (backend_) {
+            case Backend::FLYING_START:
+                jitFunc = jitCompiler.compile(program, funcId);
+                break;
+            case Backend::LLVM:
+#ifdef UMBRA_LLVM_BACKEND
+                llvmCompiler = std::make_unique<llvm_backend::LLVMCompiler>();
+                jitFunc = llvmCompiler->compile(program, funcId);
+#else
+                throw std::runtime_error(
+                    "LLVM backend not compiled. Rebuild with -DLLVM_BACKEND=ON");
+#endif
+                break;
+            case Backend::INTERPRETER:
+                break;
+            case Backend::ADAPTIVE:
+                break;  // unreachable
+        }
+    }
+
+    auto compileEnd = now();
+
+    // ── Execute phase ──────────────────────────────────────────────────
+    auto execStart = now();
+    uint32_t morselCount = 0;
+    uint32_t fsMorselCount = 0;
+    uint32_t llvmMorselCount = 0;
+    uint32_t switchMorsel = 0;
+
+    if (backend_ == Backend::ADAPTIVE) {
+        void* activeFunc = jitFunc;
+        bool usingLlvm = false;
+        uint64_t cursor = 0;
+        uint64_t args[3] = {ctxArg, 0, 0};
+
+        while (cursor < totalItems) {
+            uint64_t end = std::min(cursor + morselSize_, totalItems);
+            args[1] = cursor;
+            args[2] = end;
+            flying_start::FlyingStartCompiler::execute(activeFunc, std::span<const uint64_t>(args));
+            cursor = end;
+            ++morselCount;
+
+            if (usingLlvm) {
+                ++llvmMorselCount;
+            } else {
+                ++fsMorselCount;
+            }
+
+            if (!usingLlvm && asyncLlvm.isReady()) {
+                activeFunc = asyncLlvm.getJitFunc();
+                usingLlvm = true;
+                switchMorsel = morselCount;
+            }
+        }
+    } else if (backend_ == Backend::INTERPRETER) {
+        std::vector<uint64_t> args = {ctxArg, 0, totalItems};
+        interpreter::Interpreter interp;
+        interp.execute(program, funcId, std::span<const uint64_t>(args));
+    } else {
+        uint64_t cursor = 0;
+        uint64_t args[3] = {ctxArg, 0, 0};
+        while (cursor < totalItems) {
+            uint64_t end = std::min(cursor + morselSize_, totalItems);
+            args[1] = cursor;
+            args[2] = end;
+            if (backend_ == Backend::FLYING_START) {
+                flying_start::FlyingStartCompiler::execute(jitFunc,
+                                                           std::span<const uint64_t>(args));
+            } else {
+#ifdef UMBRA_LLVM_BACKEND
+                llvm_backend::LLVMCompiler::execute(jitFunc, std::span<const uint64_t>(args));
+#else
+                throw std::runtime_error(
+                    "LLVM backend not compiled. Rebuild with -DLLVM_BACKEND=ON");
+#endif
+            }
+            cursor = end;
+            ++morselCount;
+        }
+    }
+
+    auto execEnd = now();
+
+    // Materialize results.
+    collector.materialize(rtCtx.resultRowCount);
+
+    // Apply sort if needed.
+    applyHostSort(sortOp, projOp, scanOp, collector);
+
+    codegen::setActiveContext(nullptr);
+
+    // Record profiling data.
+    if (profiling_) {
+        profiles_[0].codegenMs = elapsedMs(codegenStart, codegenEnd);
+        profiles_[0].compileMs = elapsedMs(compileStart, compileEnd);
+        profiles_[0].executeMs = elapsedMs(execStart, execEnd);
+        profiles_[0].totalMorsels = morselCount;
+        profiles_[0].fsMorsels = fsMorselCount;
+        profiles_[0].llvmMorsels = llvmMorselCount;
+        profiles_[0].switchMorsel = switchMorsel;
+        if (asyncLlvm.started() && asyncLlvm.isReady()) {
+            profiles_[0].llvmCompileMs = asyncLlvm.compileMs();
+        }
+    }
+}
+
+// ── Host-side sort ──────────────────────────────────────────────────────────
+
+void PipelineExecutor::applyHostSort(const optimizer::PhysicalSort* sortOp,
+                                     const optimizer::PhysicalProjection* projOp,
+                                     const optimizer::PhysicalTableScan* scanOp,
+                                     ResultCollector& collector) {
+    if (sortOp == nullptr) {
+        return;
+    }
+
+    std::vector<uint32_t> sortCols;
+    std::vector<bool> ascending;
+    for (const auto& item : sortOp->orderBy) {
+        if (item.expr->kind == binder::BoundExprKind::GROUP_REF) {
+            const auto* ref = static_cast<const binder::BoundGroupRef*>(item.expr);
+            sortCols.push_back(ref->groupIndex);
+        } else if (item.expr->kind == binder::BoundExprKind::COLUMN_REF) {
+            const auto* colRef = static_cast<const binder::BoundColumnRef*>(item.expr);
+            // Map table column index to output position.
+            bool found = false;
+            if (projOp != nullptr) {
+                for (uint32_t i = 0; i < projOp->expressions.size(); ++i) {
+                    if (projOp->expressions[i]->kind == binder::BoundExprKind::COLUMN_REF) {
+                        const auto* projCol =
+                            static_cast<const binder::BoundColumnRef*>(projOp->expressions[i]);
+                        if (projCol->columnIndex == colRef->columnIndex) {
+                            sortCols.push_back(i);
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            } else if (scanOp != nullptr) {
+                for (uint32_t i = 0; i < scanOp->columnIndices.size(); ++i) {
+                    if (scanOp->columnIndices[i] == colRef->columnIndex) {
+                        sortCols.push_back(i);
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                sortCols.push_back(0);  // Fallback.
+            }
+        } else {
+            sortCols.push_back(0);  // Fallback.
+        }
+        ascending.push_back(item.ascending);
+    }
+
+    // Verify no CHAR(n>1) sort columns — host-side sort compares raw int64_t
+    // which would be pointer values, not string content.
+    const auto& sch = collector.schema();
+    for (auto col : sortCols) {
+        if (sch[col].type.id == SQLTypeId::CHAR && sch[col].type.maxLen > 1) {
+            throw std::runtime_error("ORDER BY on CHAR(" + std::to_string(sch[col].type.maxLen) +
+                                     ") not yet supported");
+        }
+    }
+    collector.sort(sortCols, ascending);
 }
 
 // ── Utilities ────────────────────────────────────────────────────────────────

@@ -364,6 +364,7 @@ TEST_CASE("Pipeline: full Q1-like two-pipeline execution", "[pipeline]") {
     // Projection: [group(0), group(1), agg(0), agg(1), agg(2)]
     // (Simplified: no AVG computation, just pass through.)
     PhysicalProjection proj(&agg);
+    proj.numGroupKeys = 2;
     BoundGroupRef gref0(0, SQLType{SQLTypeId::BOOLEAN});
     BoundGroupRef gref1(1, SQLType{SQLTypeId::BOOLEAN});
     BoundAggRef aref0(0, SQLType::bigint());
@@ -499,6 +500,7 @@ TEST_CASE("Pipeline: all rows in single group", "[pipeline]") {
 
     // Projection: pass-through group keys and agg results.
     PhysicalProjection physProj(&physAgg);
+    physProj.numGroupKeys = 2;
     BoundGroupRef gref0(0, SQLType{SQLTypeId::BOOLEAN});
     BoundGroupRef gref1(1, SQLType{SQLTypeId::BOOLEAN});
     BoundAggRef aref0(0, SQLType::bigint());
@@ -562,6 +564,7 @@ TEST_CASE("Pipeline: adaptive execution matches Flying Start results", "[pipelin
     agg.aggregates = {&sumQty, &sumPrice, &countStar};
 
     PhysicalProjection proj(&agg);
+    proj.numGroupKeys = 2;
     BoundGroupRef gref0(0, SQLType{SQLTypeId::BOOLEAN});
     BoundGroupRef gref1(1, SQLType{SQLTypeId::BOOLEAN});
     BoundAggRef aref0(0, SQLType::bigint());
@@ -636,6 +639,7 @@ TEST_CASE("Pipeline: adaptive morsel size 1 (extreme granularity)", "[pipeline]"
     agg.aggregates = {&sumQty, &countStar};
 
     PhysicalProjection proj(&agg);
+    proj.numGroupKeys = 2;
     BoundGroupRef gref0(0, SQLType{SQLTypeId::BOOLEAN});
     BoundGroupRef gref1(1, SQLType{SQLTypeId::BOOLEAN});
     BoundAggRef aref0(0, SQLType::bigint());

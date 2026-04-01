@@ -14,7 +14,7 @@ namespace umbra::ir {
 using BlockId = uint32_t;
 
 /// Sentinel for invalid block.
-constexpr BlockId INVALID_BLOCK = UINT32_MAX;
+constexpr BlockId IR_INVALID_BLOCK = 0xFFFFFFFFU;
 
 /// BlockView — iterates instructions of a block stored in the block buffer.
 /// A block is a sequence of uint32_t instruction offsets in the block buffer,

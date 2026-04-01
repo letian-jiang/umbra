@@ -75,7 +75,9 @@ class Program {
     FunctionId registerHostFunction(const std::string& name, HostFunction func, TypeId returnType,
                                     const std::vector<TypeId>& paramTypes) {
         auto id = static_cast<FunctionId>(functions_.size());
-        functions_.push_back({INVALID_BLOCK});  // No entry block for host functions
+        FunctionEntry hostEntry;
+        hostEntry.entryBlockOffset = IR_INVALID_BLOCK;
+        functions_.push_back(hostEntry);  // No entry block for host functions
         FunctionMeta m;
         m.numParams = static_cast<uint32_t>(paramTypes.size());
         m.returnType = returnType;

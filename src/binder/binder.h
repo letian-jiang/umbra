@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "binder/bound_expr.h"
@@ -81,6 +82,8 @@ class Binder {
     BoundExpr* bindUnaryExpr(const parser::UnaryExpr* unExpr);
     BoundExpr* bindFuncCall(const parser::FuncCall* funcCall);
     BoundExpr* bindDateArith(const parser::DateArith* dateArith);
+    BoundExpr* bindCastExpr(const parser::CastExpr* castExpr);
+    static SQLType resolveTypeName(const std::string& name);
 
     // ── Type Inference ───────────────────────────────────────────────────────
     struct TypeResolution {
@@ -97,6 +100,10 @@ class Binder {
     // ── Constant Folding ─────────────────────────────────────────────────────
     static int32_t evaluateConstDate(const parser::Literal* dateLit);
     static int64_t evaluateConstInterval(const parser::Literal* intervalLit);
+
+    // ── Decimal Literal Inference ───────────────────────────────────────────
+    /// Infer precision and scale from a decimal literal string.
+    static std::pair<int, int> inferDecimalLiteral(const std::string& str);
 
     // ── Aggregate Analysis ───────────────────────────────────────────────────
     struct AggregateAnalysis {

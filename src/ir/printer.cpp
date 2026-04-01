@@ -43,7 +43,7 @@ std::unordered_map<uint32_t, std::string> buildBlockNames(const Program& program
                                                           FunctionId funcId) {
     std::unordered_map<uint32_t, std::string> names;
     const auto& entry = program.functionEntry(funcId);
-    if (entry.entryBlockOffset == INVALID_BLOCK) {
+    if (entry.entryBlockOffset == IR_INVALID_BLOCK) {
         return names;
     }
 
@@ -131,7 +131,7 @@ std::string IRPrinter::printFunction(const Program& program, FunctionId funcId) 
     }
     out << ") {\n";
 
-    if (entry.entryBlockOffset == INVALID_BLOCK) {
+    if (entry.entryBlockOffset == IR_INVALID_BLOCK) {
         out << "  ; no entry block\n}\n";
         return out.str();
     }
